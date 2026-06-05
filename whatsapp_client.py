@@ -1,3 +1,4 @@
+import os
 import logging
 import httpx
 import mimetypes
@@ -7,6 +8,26 @@ logger = logging.getLogger("site_bot")
 
 BASE_URL = f"https://graph.facebook.com/v19.0/{settings.WHATSAPP_PHONE_NUMBER_ID}"
 HEADERS = {"Authorization": f"Bearer {settings.WHATSAPP_TOKEN}"}
+
+# WhatsApp validates the upload's MIME type against a fixed allow-list and
+# rejects application/octet-stream. mimetypes.guess_type() is platform-
+# dependent (it returns None for .xlsx on a bare Linux container), so map the
+# extensions we actually send explicitly rather than trusting the OS.
+_MIME_BY_EXT = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
+def _mime_for(filename: str) -> str:
+    ext = os.path.splitext(filename)[1].lower()
+    return (
+        _MIME_BY_EXT.get(ext)
+        or mimetypes.guess_type(filename)[0]
+        or "application/octet-stream"
+    )
 
 
 def _check(response: httpx.Response, action: str):
@@ -35,8 +56,7 @@ async def send_message(to: str, text: str):
 
 async def upload_media(file_bytes: bytes, filename: str) -> str:
     """Upload a file to WhatsApp media API and return media_id."""
-    mime_type, _ = mimetypes.guess_type(filename)
-    mime_type = mime_type or "application/octet-stream"
+    mime_type = _mime_for(filename)
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{BASE_URL}/media",
