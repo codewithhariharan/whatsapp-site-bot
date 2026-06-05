@@ -2,7 +2,7 @@ import hmac
 import hashlib
 import json
 import logging
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import PlainTextResponse
 from config import settings
 from message_handler import handle_message
@@ -32,8 +32,16 @@ async def verify(request: Request):
 
 # ── Incoming messages ─────────────────────────────────────────────────────────
 
+async def _safe_handle(group_id: str, sender_name: str, sender_number: str, text: str):
+    """Run a message handler in the background, logging any failure."""
+    try:
+        await handle_message(group_id, sender_name, sender_number, text)
+    except Exception:
+        logger.exception("handle_message failed for %s: %r", group_id, text)
+
+
 @app.post("/webhook")
-async def webhook(request: Request):
+async def webhook(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
 
     logger.debug("─── Incoming POST /webhook ───────────────────────────────")
@@ -82,7 +90,11 @@ async def webhook(request: Request):
                 # For 1-on-1, use the sender number as the "group_id".
                 group_id = msg.get("context", {}).get("from") or sender_number
 
-                await handle_message(group_id, sender_name, sender_number, text)
+                # Acknowledge Meta immediately; do the real work after the
+                # 200 is sent so the webhook never times out and gets retried.
+                background_tasks.add_task(
+                    _safe_handle, group_id, sender_name, sender_number, text
+                )
 
     return {"status": "ok"}
 
