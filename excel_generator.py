@@ -35,6 +35,19 @@ def _tab_name(week_start: date, week_end: date) -> str:
     return f"{week_start.strftime('%d%b')}-{week_end.strftime('%d%b')}"
 
 
+def _resolve_location(loc: str, ordered: list[str]) -> str:
+    """Map a log's location to its best match in the ordered list.
+    Handles prefix mismatches like 'CCW' stored in DB vs 'CCW1' in setorder.
+    Mirrors the resolution used by the daily report so the Excel matches rows.
+    """
+    if loc in ordered:
+        return loc
+    for candidate in ordered:
+        if candidate.startswith(loc) or loc.startswith(candidate):
+            return candidate
+    return loc
+
+
 def _style_cell(cell, font=None, fill=None, alignment=None, border=True):
     if font:
         cell.font = font
@@ -64,11 +77,21 @@ def generate_monthly_excel(
 
     weeks = _week_ranges(year, month)
 
-    # Index logs by (location, date) for quick lookup
+    # Index logs by (resolved location, date) for quick lookup. Resolve the
+    # stored main_location to its canonical name (e.g. "CCW" -> "CCW1") so rows
+    # match the ordered location list — otherwise every cell renders "-".
     log_index: dict[tuple[str, str], list[dict]] = {}
     for log in logs:
-        key = (log["main_location"], log["log_date"])
+        resolved = _resolve_location(log["main_location"], locations)
+        key = (resolved, log["log_date"])
         log_index.setdefault(key, []).append(log)
+
+    # Include any locations present in the logs but missing from the ordered
+    # list, so unmapped entries still appear (mirrors the daily report).
+    locations = list(locations)
+    for resolved, _log_date in log_index:
+        if resolved not in locations:
+            locations.append(resolved)
 
     for week_start, week_end in weeks:
         ws = wb.create_sheet(title=_tab_name(week_start, week_end))
