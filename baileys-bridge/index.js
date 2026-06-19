@@ -38,6 +38,21 @@ const RECONNECT_DELAY_MS = 5000 // wait before reconnecting to avoid 405 rate-li
 const PAIRING_NUMBER = (process.env.PAIRING_NUMBER || '').replace(/[^0-9]/g, '')
 let pairingRequested = false // ensure we only request one code per process
 
+// Track the IDs of messages the bot itself sends, so its own replies (which come
+// back through messages.upsert as fromMe) are skipped — while still logging
+// messages a human types on the work phone (also fromMe, but not bot-sent).
+const sentMessageIds = new Set()
+const sentMessageOrder = []
+const MAX_TRACKED_SENT = 1000
+function recordSentId(id) {
+  if (!id || sentMessageIds.has(id)) return
+  sentMessageIds.add(id)
+  sentMessageOrder.push(id)
+  if (sentMessageOrder.length > MAX_TRACKED_SENT) {
+    sentMessageIds.delete(sentMessageOrder.shift())
+  }
+}
+
 // Shared socket handle. Reassigned on every (re)connect so the HTTP handlers
 // below always use the live connection.
 let sock = null
@@ -166,15 +181,21 @@ async function startSock() {
         'message received',
       )
 
-      if (m.key.fromMe) continue // ignore our own messages (avoids reply loops)
+      // Skip the bot's OWN replies (their IDs are tracked) so it never reacts to
+      // itself. A message a human types on the work phone is also fromMe but is
+      // NOT in that set, so we let it through and it gets logged like any other.
+      if (m.key.fromMe && sentMessageIds.has(m.key.id)) continue
       if (!isGroup) continue // groups only — 1:1 stays on Cloud API
 
       const text = previewText
       if (!text) continue
 
       // In a group, key.participant is the actual sender; remoteJid is the group.
-      const participant = m.key.participant || m.participant || ''
-      const sender_number = participant.split('@')[0]
+      // For our own (work-phone) messages, fall back to the bot's own JID.
+      const participant =
+        m.key.participant || m.participant || (m.key.fromMe ? sock.user?.id || '' : '')
+      // Strip any device suffix, e.g. "6588257614:12@s.whatsapp.net" -> "6588257614".
+      const sender_number = participant.split('@')[0].split(':')[0]
       const sender_name = m.pushName || sender_number
 
       await forwardToPython({
@@ -216,7 +237,8 @@ app.post('/send', async (req, res) => {
     return res.status(400).json({ error: 'to and text are required' })
   }
   try {
-    await sock.sendMessage(to, { text })
+    const sent = await sock.sendMessage(to, { text })
+    recordSentId(sent?.key?.id)
     res.json({ status: 'sent' })
   } catch (err) {
     logger.error({ err, to }, 'sendMessage failed')
@@ -233,12 +255,13 @@ app.post('/send-document', async (req, res) => {
       .json({ error: 'to, file_base64 and filename are required' })
   }
   try {
-    await sock.sendMessage(to, {
+    const sent = await sock.sendMessage(to, {
       document: Buffer.from(file_base64, 'base64'),
       fileName: filename,
       mimetype: mimetype || 'application/octet-stream',
       caption: caption || '',
     })
+    recordSentId(sent?.key?.id)
     res.json({ status: 'sent' })
   } catch (err) {
     logger.error({ err, to }, 'send-document failed')
