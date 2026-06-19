@@ -1,5 +1,10 @@
 # WhatsApp Site Bot — Setup Guide
 
+> **Group support:** The official Cloud API (this bot) only does 1:1 chats.
+> To run the bot inside WhatsApp **groups**, see `baileys-bridge/README.md` —
+> an optional unofficial companion service. (Unofficial = violates Meta's ToS;
+> use a separate, throwaway number.)
+
 ## What You Need Before Starting
 
 1. A **Meta Business Account** — business.facebook.com

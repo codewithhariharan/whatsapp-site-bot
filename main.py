@@ -101,6 +101,33 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     return {"status": "ok"}
 
 
+# ── Incoming group messages from the Baileys bridge ───────────────────────────
+
+@app.post("/baileys/incoming")
+async def baileys_incoming(request: Request, background_tasks: BackgroundTasks):
+    """Receive a normalized group message from the Baileys bridge service.
+
+    The bridge is the transport for WhatsApp groups (the Cloud API can't do
+    groups); this endpoint plays the same role /webhook does for 1:1 chats.
+    """
+    secret = settings.BRIDGE_SHARED_SECRET
+    provided = request.headers.get("X-Bridge-Secret", "")
+    if not secret or not hmac.compare_digest(provided, secret):
+        raise HTTPException(status_code=403, detail="Invalid bridge secret")
+
+    data = await request.json()
+    group_id = data.get("group_id")
+    text = (data.get("text") or "").strip()
+    if not group_id or not text:
+        return {"status": "ignored"}
+
+    sender_number = data.get("sender_number", "")
+    sender_name = data.get("sender_name") or sender_number
+
+    background_tasks.add_task(_safe_handle, group_id, sender_name, sender_number, text)
+    return {"status": "ok"}
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}

@@ -1,4 +1,5 @@
 import os
+import base64
 import logging
 import httpx
 import mimetypes
@@ -8,6 +9,27 @@ logger = logging.getLogger("site_bot")
 
 BASE_URL = f"https://graph.facebook.com/v19.0/{settings.WHATSAPP_PHONE_NUMBER_ID}"
 HEADERS = {"Authorization": f"Bearer {settings.WHATSAPP_TOKEN}"}
+
+
+def _is_group(to: str) -> bool:
+    """Group JIDs end with @g.us; 1:1 recipients are bare phone numbers.
+    Group traffic goes through the Baileys bridge, 1:1 through the Cloud API.
+    """
+    return to.endswith("@g.us")
+
+
+async def _bridge_post(path: str, payload: dict):
+    """Send a reply into a WhatsApp group via the Baileys bridge service."""
+    if not settings.BAILEYS_BRIDGE_URL:
+        logger.error("Group reply requested but BAILEYS_BRIDGE_URL is not configured")
+        return
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{settings.BAILEYS_BRIDGE_URL.rstrip('/')}{path}",
+            headers={"X-Bridge-Secret": settings.BRIDGE_SHARED_SECRET},
+            json=payload,
+        )
+    _check(response, f"bridge {path}")
 
 # WhatsApp validates the upload's MIME type against a fixed allow-list and
 # rejects application/octet-stream. mimetypes.guess_type() is platform-
@@ -39,7 +61,14 @@ def _check(response: httpx.Response, action: str):
 
 
 async def send_message(to: str, text: str):
-    """Send a plain text message to a group or individual."""
+    """Send a plain text message.
+
+    Group recipients (JID ending in @g.us) are routed through the Baileys
+    bridge; individual recipients (bare phone number) use the Cloud API.
+    """
+    if _is_group(to):
+        await _bridge_post("/send", {"to": to, "text": text})
+        return
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{BASE_URL}/messages",
@@ -69,7 +98,20 @@ async def upload_media(file_bytes: bytes, filename: str) -> str:
 
 
 async def send_document(to: str, file_bytes: bytes, filename: str, caption: str = ""):
-    """Upload a file then send it as a document message."""
+    """Send a file as a document message.
+
+    Groups go through the bridge (file sent base64-encoded); individuals use
+    the Cloud API upload-then-send flow.
+    """
+    if _is_group(to):
+        await _bridge_post("/send-document", {
+            "to": to,
+            "file_base64": base64.b64encode(file_bytes).decode(),
+            "filename": filename,
+            "mimetype": _mime_for(filename),
+            "caption": caption,
+        })
+        return
     media_id = await upload_media(file_bytes, filename)
     async with httpx.AsyncClient() as client:
         response = await client.post(

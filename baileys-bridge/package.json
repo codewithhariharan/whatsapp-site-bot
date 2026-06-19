@@ -1,0 +1,20 @@
+{
+  "name": "baileys-bridge",
+  "version": "1.0.0",
+  "description": "Thin Baileys (unofficial WhatsApp Web) transport bridge for group messaging. Forwards group messages to the Python site-bot and delivers its replies back into the group.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "pino": "^9.5.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
