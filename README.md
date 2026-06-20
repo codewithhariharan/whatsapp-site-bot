@@ -1,4 +1,48 @@
-# WhatsApp Site Bot — Setup Guide
+# WhatsApp Site Bot
+
+A WhatsApp bot that turns a construction site's group chat into a structured reporting system. Site engineers send progress updates as ordinary WhatsApp messages; the bot uses Claude to parse the free-form text into structured logs, stores them in a database, and generates daily summaries and Excel reports on demand — no app, no forms, and no training required for the people on site.
+
+## Highlights
+
+- **Natural-language logging** — engineers write updates however they like; Claude (`claude-sonnet-4-6`) extracts location, description, and manpower into structured records.
+- **Conversational queries** — `/ask when was Panel 39 cast?` runs natural-language Q&A over the full site history.
+- **Automated reporting** — one-command daily summaries and monthly Excel exports (openpyxl), including a specialised D-Wall panel tracker.
+- **Multi-tenant** — one bot number serves many sites; each WhatsApp group gets its own isolated dataset and configuration.
+- **Group support** — the official Cloud API handles 1:1 chats; an optional Node/Baileys bridge extends the bot into WhatsApp groups.
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Backend | Python, FastAPI (async), Uvicorn |
+| AI | Anthropic Claude (`claude-sonnet-4-6`) |
+| Messaging | Meta WhatsApp Cloud API + webhooks; Baileys (Node) bridge for groups |
+| Data | Supabase (PostgreSQL) |
+| Reporting | openpyxl (Excel generation) |
+| Deployment | Railway (auto-deploy from GitHub) |
+
+## Architecture
+
+```
+WhatsApp ──► Meta Cloud API ──► /webhook (FastAPI)
+   ▲                                  │
+   │                                  ▼
+   │                          message_handler ──► commands (/daily, /excel, /ask …)
+   │                                  │
+   │                                  ▼
+   └──── whatsapp_client ◄──── message_parser ──► Claude  (parse free-text)
+                                      │
+                                      ▼
+                               Supabase (Postgres)
+
+Groups:  WhatsApp group ──► Baileys bridge (Node) ──► /webhook
+```
+
+Incoming webhooks are signature-verified against the Meta App Secret (HMAC-SHA256), and logging is pinned to `INFO` so service-role keys and tokens never reach the logs.
+
+---
+
+## Setup Guide
 
 > **Group support:** The official Cloud API (this bot) only does 1:1 chats.
 > To run the bot inside WhatsApp **groups**, see `baileys-bridge/README.md` —
