@@ -1,0 +1,35 @@
+# Runs the full two-service stack locally:
+#   api    — FastAPI webhook + business logic (1:1 via WhatsApp Cloud API)
+#   bridge — Baileys transport so the bot also works in WhatsApp groups
+#
+# Usage:
+#   1. Create .env (API) and baileys-bridge/.env (bridge) from their examples.
+#   2. On the compose network the two reach each other by service name, so set:
+#        in .env                  BAILEYS_BRIDGE_URL=http://bridge:8088
+#        in baileys-bridge/.env   PYTHON_INGEST_URL=http://api:8000/baileys/incoming
+#      and use the SAME BRIDGE_SHARED_SECRET in both.
+#   3. docker compose up --build
+#   4. Watch `docker compose logs -f bridge` once to scan the first QR code.
+
+services:
+  api:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  bridge:
+    build: ./baileys-bridge
+    env_file: baileys-bridge/.env
+    ports:
+      - "8088:8088"
+    depends_on:
+      - api
+    volumes:
+      # Persist the linked-device session so you only scan the QR once.
+      - baileys_auth:/app/auth_info
+    restart: unless-stopped
+
+volumes:
+  baileys_auth:

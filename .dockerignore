@@ -1,0 +1,15 @@
+# Keep the API image small and fast to build.
+.git/
+.github/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+tests/
+.venv/
+venv/
+.env
+*.log
+# The Node bridge is built from its own context (./baileys-bridge); never pull
+# its node_modules into the Python image.
+baileys-bridge/
