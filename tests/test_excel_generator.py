@@ -162,6 +162,84 @@ class TestNoPlaceholderRows:
         assert blanks <= 2
 
 
+class TestFullExcel:
+    """/excel2 — every log on one sheet, oldest first."""
+
+    def _logs(self):
+        return [
+            {"main_location": "Zone2", "sub_location": "b", "description": "June work",
+             "manpower": "2", "log_date": "2026-06-15", "logged_at": "2026-06-15T09:00"},
+            {"main_location": "Zone1", "sub_location": "a", "description": "April work",
+             "manpower": "1", "log_date": "2026-04-20", "logged_at": "2026-04-20T09:00"},
+            {"main_location": "Zone1", "sub_location": "c", "description": "July work",
+             "manpower": "3", "log_date": "2026-07-27", "logged_at": "2026-07-27T09:00"},
+        ]
+
+    def test_single_sheet(self):
+        wb = load_workbook(io.BytesIO(
+            xls.generate_full_excel(self._logs(), ["Zone1", "Zone2"])))
+        assert wb.sheetnames == ["All Logs"]
+
+    def test_rows_are_chronological_oldest_first(self):
+        rows = _data_rows(xls.generate_full_excel(self._logs(), ["Zone1", "Zone2"]))
+        assert [r[4] for r in rows] == ["April work", "June work", "July work"]
+
+    def test_keeps_the_monthly_column_layout(self):
+        wb = load_workbook(io.BytesIO(
+            xls.generate_full_excel(self._logs(), ["Zone1"])))
+        header = [c.value for c in wb["All Logs"][1]]
+        assert header == ["Day", "Date", "Main Location", "Sub Location",
+                          "Description / Activity", "Manpower"]
+
+    def test_day_and_date_columns_are_populated(self):
+        rows = _data_rows(xls.generate_full_excel(self._logs(), ["Zone1", "Zone2"]))
+        assert rows[0][0] == "Mon (20/04)"   # 20 Apr 2026 is a Monday
+        assert rows[0][1] == "20 Apr 2026"
+
+    def test_within_a_day_follows_setorder(self):
+        logs = [
+            {"main_location": "Zone2", "description": "second", "log_date": "2026-06-15",
+             "sub_location": "", "manpower": "", "logged_at": "2026-06-15T08:00"},
+            {"main_location": "Zone1", "description": "first", "log_date": "2026-06-15",
+             "sub_location": "", "manpower": "", "logged_at": "2026-06-15T09:00"},
+        ]
+        rows = _data_rows(xls.generate_full_excel(logs, ["Zone1", "Zone2"]))
+        assert [r[4] for r in rows] == ["first", "second"]
+
+    def test_unordered_locations_sort_last_but_are_kept(self):
+        logs = [
+            {"main_location": "Ghost", "description": "unordered", "log_date": "2026-06-15",
+             "sub_location": "", "manpower": "", "logged_at": "2026-06-15T08:00"},
+            {"main_location": "Zone1", "description": "ordered", "log_date": "2026-06-15",
+             "sub_location": "", "manpower": "", "logged_at": "2026-06-15T09:00"},
+        ]
+        rows = _data_rows(xls.generate_full_excel(logs, ["Zone1"]))
+        assert [r[4] for r in rows] == ["ordered", "unordered"]
+
+    def test_undescribed_logs_are_excluded(self):
+        logs = self._logs() + [
+            {"main_location": "Zone1", "sub_location": "NOPE", "description": None,
+             "manpower": "", "log_date": "2026-05-01", "logged_at": "2026-05-01T09:00"},
+        ]
+        assert "NOPE" not in _all_cell_values(
+            xls.generate_full_excel(logs, ["Zone1"]))
+
+    def test_no_dash_filler(self):
+        assert "-" not in _all_cell_values(
+            xls.generate_full_excel(self._logs(), ["Zone1", "Zone2"]))
+
+    def test_header_is_frozen_for_scrolling(self):
+        wb = load_workbook(io.BytesIO(
+            xls.generate_full_excel(self._logs(), ["Zone1"])))
+        assert wb["All Logs"].freeze_panes == "A2"
+
+    def test_empty_logs_still_produce_a_valid_workbook(self):
+        data = xls.generate_full_excel([], ["Zone1"])
+        wb = load_workbook(io.BytesIO(data))
+        assert wb.sheetnames == ["All Logs"]
+        assert _data_rows(data) == []
+
+
 class TestDwallExcel:
     def test_produces_workbook_with_panel_tracker_sheet(self):
         panels = [{"panel_number": "CN284A", "entry_number": "Ent-2",

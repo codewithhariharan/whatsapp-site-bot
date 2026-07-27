@@ -69,6 +69,84 @@ def _style_cell(cell, font=None, fill=None, alignment=None, border=True):
         cell.border = BORDER
 
 
+COL_WIDTHS = [8, 12, 22, 30, 55, 20]
+COL_HEADERS = ["Day", "Date", "Main Location", "Sub Location",
+               "Description / Activity", "Manpower"]
+
+
+def _write_header(ws):
+    """Write the shared column header row and set column widths."""
+    for i, (width, header) in enumerate(zip(COL_WIDTHS, COL_HEADERS), start=1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+        cell = ws.cell(row=1, column=i, value=header)
+        _style_cell(cell, font=HEADER_FONT, fill=HEADER_FILL,
+                    alignment=Alignment(horizontal="center", vertical="center",
+                                        wrap_text=True))
+    ws.row_dimensions[1].height = 30
+
+
+def _write_entry(ws, row: int, day: date, entry: dict, location: str):
+    """Write one log entry as a row, returning the next free row."""
+    cells = [
+        f"{DAY_NAMES[day.weekday()]} ({day.strftime('%d/%m')})",
+        day.strftime("%d %b %Y"),
+        entry.get("main_location", location),
+        entry.get("sub_location", ""),
+        entry.get("description", ""),
+        entry.get("manpower", ""),
+    ]
+    for col, val in enumerate(cells, start=1):
+        cell = ws.cell(row=row, column=col, value=val)
+        _style_cell(cell, font=CELL_FONT,
+                    alignment=Alignment(vertical="top", wrap_text=True))
+    ws.row_dimensions[row].height = 35
+    return row + 1
+
+
+def generate_full_excel(logs: list[dict], locations: list[str]) -> bytes:
+    """Build a single-sheet workbook covering every log, oldest first.
+
+    Same columns as the monthly export, but one continuous sheet instead of a
+    tab per week — so the whole project reads top to bottom in date order.
+
+    Within a day, entries follow the /setorder location sequence (then the
+    order they were logged), which keeps a day's locations together without
+    breaking the overall chronology.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "All Logs"
+    ws.sheet_view.showGridLines = False
+
+    _write_header(ws)
+    ws.freeze_panes = "A2"  # header stays visible over a very long sheet
+
+    rank = {loc: i for i, loc in enumerate(locations)}
+
+    def sort_key(log):
+        resolved = _resolve_location(log["main_location"], locations)
+        return (
+            log["log_date"],
+            rank.get(resolved, len(rank)),  # unordered locations sort last
+            resolved,
+            str(log.get("logged_at") or ""),
+        )
+
+    entries = sorted((l for l in logs if _has_description(l)), key=sort_key)
+
+    row = 2
+    for entry in entries:
+        day = date.fromisoformat(entry["log_date"])
+        row = _write_entry(ws, row, day, entry, entry.get("main_location", ""))
+
+    if row > 2:
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(COL_HEADERS))}{row - 1}"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def generate_monthly_excel(
     group_id: str,
     year: int,
@@ -112,16 +190,7 @@ def generate_monthly_excel(
         ws = wb.create_sheet(title=_tab_name(week_start, week_end))
         ws.sheet_view.showGridLines = False
 
-        # Column widths
-        col_widths = [8, 12, 22, 30, 55, 20]
-        col_headers = ["Day", "Date", "Main Location", "Sub Location", "Description / Activity", "Manpower"]
-        for i, (w, h) in enumerate(zip(col_widths, col_headers), start=1):
-            ws.column_dimensions[get_column_letter(i)].width = w
-            cell = ws.cell(row=1, column=i, value=h)
-            _style_cell(cell, font=HEADER_FONT, fill=HEADER_FILL,
-                        alignment=Alignment(horizontal="center", vertical="center", wrap_text=True))
-
-        ws.row_dimensions[1].height = 30
+        _write_header(ws)
 
         current_row = 2
         week_days = [week_start + timedelta(days=d) for d in range(7)]
@@ -132,27 +201,12 @@ def generate_monthly_excel(
                 if day.month != month:
                     continue  # spill-over days from the neighbouring month
 
-                day_label = f"{DAY_NAMES[day.weekday()]} ({day.strftime('%d/%m')})"
-
                 # Only days with actual logged activity get a row. Previously a
                 # row was written for every location on every day, padded with
                 # "-" — on July 2026 that was 3337 filler rows against 313 real
                 # ones, burying the report in blanks.
                 for entry in log_index.get((location, day.isoformat()), []):
-                    cells_data = [
-                        day_label,
-                        day.strftime("%d %b %Y"),
-                        entry.get("main_location", location),
-                        entry.get("sub_location", ""),
-                        entry.get("description", ""),
-                        entry.get("manpower", ""),
-                    ]
-                    for col, val in enumerate(cells_data, start=1):
-                        cell = ws.cell(row=current_row, column=col, value=val)
-                        _style_cell(cell, font=CELL_FONT,
-                                    alignment=Alignment(vertical="top", wrap_text=True))
-                    ws.row_dimensions[current_row].height = 35
-                    current_row += 1
+                    current_row = _write_entry(ws, current_row, day, entry, location)
                     wrote_any = True
 
             # Separator only after a location that actually produced rows,

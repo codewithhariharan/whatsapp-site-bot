@@ -23,6 +23,8 @@ async def handle_help(group_id: str):
         "Export this month's logs as an Excel file.\n\n"
         "*/excel* _Jan 2026_\n"
         "Export a specific month's logs.\n\n"
+        "*/excel2*\n"
+        "Export every log from the start to now, all on one sheet.\n\n"
         "*/dwall*\n"
         "Export all D-Wall / Barrette panel records as Excel.\n\n"
         "*/ask* _your question_\n"
@@ -235,6 +237,35 @@ async def handle_excel(group_id: str, args: str = ""):
         file_bytes,
         filename,
         caption=f"📊 {month_name} {year} — {len(logs)} log entries across {len(locations)} locations.",
+    )
+
+
+# ── /excel2 ───────────────────────────────────────────────────────────────────
+
+async def handle_excel2(group_id: str):
+    """Export every log ever recorded, oldest first, on a single sheet."""
+    logs = db.get_all_logs(group_id)
+    locations = db.get_location_order(group_id)
+
+    if not logs:
+        await send_message(group_id, "⚠️ No logs found for this group.")
+        return
+
+    file_bytes = xls.generate_full_excel(logs, locations)
+
+    dates = sorted(log["log_date"] for log in logs)
+    first = date.fromisoformat(dates[0])
+    last = date.fromisoformat(dates[-1])
+    span = f"{first.strftime('%d%b%Y')}-{last.strftime('%d%b%Y')}"
+
+    await send_document(
+        group_id,
+        file_bytes,
+        f"Site_Report_Full_{span}.xlsx",
+        caption=(
+            f"📊 Full site report — {len(logs)} log entries, "
+            f"{first.strftime('%d %b %Y')} to {last.strftime('%d %b %Y')}."
+        ),
     )
 
 

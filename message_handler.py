@@ -39,6 +39,12 @@ async def handle_message(group_id: str, sender_name: str, sender_number: str, te
         await cmd.handle_delete(group_id, args)
         return
 
+    # Must precede /excel: startswith("/excel") also matches "/excel2", which
+    # would otherwise be read as /excel with the argument "2".
+    if lower.startswith("/excel2"):
+        await cmd.handle_excel2(group_id)
+        return
+
     if lower.startswith("/excel"):
         args = text[len("/excel"):].strip()
         await cmd.handle_excel(group_id, args)
