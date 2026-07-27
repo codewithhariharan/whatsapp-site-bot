@@ -2,6 +2,7 @@
 import io
 from datetime import date
 
+import pytest
 from openpyxl import load_workbook
 
 import excel_generator as xls
@@ -36,17 +37,72 @@ class TestFormatDowntime:
         assert "Equipment fault" in out
 
 
+def _log(description, location="Zone1", sub="GL-A", manpower="2", day=15):
+    return {
+        "main_location": location, "sub_location": sub,
+        "description": description, "manpower": manpower,
+        "log_date": date(2026, 6, day).isoformat(),
+    }
+
+
+def _all_cell_values(data: bytes) -> list:
+    wb = load_workbook(io.BytesIO(data))
+    return [c.value for ws in wb.worksheets for row in ws.iter_rows() for c in row]
+
+
 class TestMonthlyExcel:
     def test_produces_openable_workbook(self):
-        logs = [{
-            "main_location": "Zone1", "sub_location": "GL-A",
-            "description": "Rebar", "manpower": "2",
-            "log_date": date(2026, 6, 15).isoformat(),
-        }]
-        data = xls.generate_monthly_excel("g1", 2026, 6, logs, ["Zone1"])
+        data = xls.generate_monthly_excel("g1", 2026, 6, [_log("Rebar")], ["Zone1"])
         assert isinstance(data, bytes) and len(data) > 0
         wb = load_workbook(io.BytesIO(data))
         assert len(wb.sheetnames) >= 1  # one sheet per week
+
+    def test_log_with_a_description_is_included(self):
+        data = xls.generate_monthly_excel("g1", 2026, 6, [_log("Rebar works")], ["Zone1"])
+        assert "Rebar works" in _all_cell_values(data)
+
+
+class TestDescriptionRequired:
+    """Entries with no description say nothing about site activity, so they are
+    left out of the export rather than written as a blank row."""
+
+    @pytest.mark.parametrize("description", [None, "", "   ", "\n", "\t "])
+    def test_log_without_a_description_is_excluded(self, description):
+        data = xls.generate_monthly_excel(
+            "g1", 2026, 6, [_log(description, sub="UNIQUE-SUB")], ["Zone1"])
+        # Its other fields must not appear either — the whole row is dropped.
+        assert "UNIQUE-SUB" not in _all_cell_values(data)
+
+    def test_missing_description_key_is_excluded(self):
+        log = _log("x", sub="UNIQUE-SUB")
+        del log["description"]
+        data = xls.generate_monthly_excel("g1", 2026, 6, [log], ["Zone1"])
+        assert "UNIQUE-SUB" not in _all_cell_values(data)
+
+    def test_described_logs_survive_alongside_undescribed_ones(self):
+        logs = [_log("Real activity", sub="KEEP"), _log(None, sub="DROP")]
+        values = _all_cell_values(
+            xls.generate_monthly_excel("g1", 2026, 6, logs, ["Zone1"]))
+        assert "KEEP" in values
+        assert "DROP" not in values
+
+    def test_day_left_empty_falls_back_to_the_no_logs_dash(self):
+        # Dropping the only entry for a day must not leave a half-written row.
+        data = xls.generate_monthly_excel("g1", 2026, 6, [_log(None)], ["Zone1"])
+        wb = load_workbook(io.BytesIO(data))
+        for ws in wb.worksheets:
+            for row in ws.iter_rows(min_row=2):
+                cells = [c.value for c in row]
+                if cells[2] == "Zone1":       # a location row for this month
+                    assert cells[4] == "-"    # description column
+                    assert cells[3] == "-"
+
+    def test_location_only_referenced_by_undescribed_logs_is_not_invented(self):
+        # Unordered locations are appended from the logs; a dropped log must not
+        # drag its location into the sheet.
+        logs = [_log(None, location="GhostZone")]
+        assert "GhostZone" not in _all_cell_values(
+            xls.generate_monthly_excel("g1", 2026, 6, logs, ["Zone1"]))
 
 
 class TestDwallExcel:

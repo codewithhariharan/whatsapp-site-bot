@@ -48,6 +48,16 @@ def _resolve_location(loc: str, ordered: list[str]) -> str:
     return loc
 
 
+def _has_description(log: dict) -> bool:
+    """True if the log carries an actual activity description.
+
+    Entries without one say nothing about what happened on site, so they are
+    left out of the export entirely rather than rendered as a blank row. None,
+    "" and whitespace-only all count as absent.
+    """
+    return bool(str(log.get("description") or "").strip())
+
+
 def _style_cell(cell, font=None, fill=None, alignment=None, border=True):
     if font:
         cell.font = font
@@ -71,6 +81,10 @@ def generate_monthly_excel(
     - One sheet per week
     - Rows: one per location (in fixed order), with sub-rows for each day
     - Columns: Day | Date | Main Location | Sub Location | Description | Manpower
+
+    Logs with no description are dropped: a row whose activity column is blank
+    carries no information. A day left with nothing renders as "-" like any
+    other day without logs.
     """
     wb = Workbook()
     wb.remove(wb.active)  # remove default sheet
@@ -82,6 +96,8 @@ def generate_monthly_excel(
     # match the ordered location list — otherwise every cell renders "-".
     log_index: dict[tuple[str, str], list[dict]] = {}
     for log in logs:
+        if not _has_description(log):
+            continue
         resolved = _resolve_location(log["main_location"], locations)
         key = (resolved, log["log_date"])
         log_index.setdefault(key, []).append(log)
