@@ -39,20 +39,40 @@ const RECONNECT_DELAY_MS = 5000 // wait before reconnecting to avoid 405 rate-li
 const PAIRING_NUMBER = (process.env.PAIRING_NUMBER || '').replace(/[^0-9]/g, '')
 let pairingRequested = false // ensure we only request one code per process
 
+const MAX_TRACKED_IDS = 1000
+
+// A Set that remembers only the most recent `max` ids, so these never grow
+// without bound on a long-lived connection.
+function boundedIdSet(max) {
+  const ids = new Set()
+  const order = []
+  return {
+    has: (id) => ids.has(id),
+    // True if `id` is new (and now recorded); false if it was already present.
+    add(id) {
+      if (!id || ids.has(id)) return false
+      ids.add(id)
+      order.push(id)
+      if (order.length > max) ids.delete(order.shift())
+      return true
+    },
+  }
+}
+
 // Track the IDs of messages the bot itself sends, so its own replies (which come
 // back through messages.upsert as fromMe) are skipped — while still logging
 // messages a human types on the work phone (also fromMe, but not bot-sent).
-const sentMessageIds = new Set()
-const sentMessageOrder = []
-const MAX_TRACKED_SENT = 1000
+const sentMessages = boundedIdSet(MAX_TRACKED_IDS)
 function recordSentId(id) {
-  if (!id || sentMessageIds.has(id)) return
-  sentMessageIds.add(id)
-  sentMessageOrder.push(id)
-  if (sentMessageOrder.length > MAX_TRACKED_SENT) {
-    sentMessageIds.delete(sentMessageOrder.shift())
-  }
+  sentMessages.add(id)
 }
+
+// WhatsApp can deliver the same message to a linked device more than once — a
+// message typed on the work phone arrives as a local echo and again as the
+// server-confirmed copy. Both carry the same key.id, but pushName is only
+// populated on the later one, so the two were logged as separate rows with
+// different sender_names (the raw number, then the display name).
+const seenMessages = boundedIdSet(MAX_TRACKED_IDS)
 
 // Shared socket handle. Reassigned on every (re)connect so the HTTP handlers
 // below always use the live connection.
@@ -205,11 +225,19 @@ async function startSock() {
       // Skip the bot's OWN replies (their IDs are tracked) so it never reacts to
       // itself. A message a human types on the work phone is also fromMe but is
       // NOT in that set, so we let it through and it gets logged like any other.
-      if (m.key.fromMe && sentMessageIds.has(m.key.id)) continue
+      if (m.key.fromMe && sentMessages.has(m.key.id)) continue
       if (!isGroup) continue // groups only — 1:1 stays on Cloud API
 
       const text = previewText
       if (!text) continue
+
+      // Drop repeat deliveries of a message we've already forwarded. Checked
+      // last so the set only ever holds ids we actually acted on. A message
+      // with no id can't be deduped — forward it rather than drop it.
+      if (m.key.id && !seenMessages.add(m.key.id)) {
+        logger.debug({ id: m.key.id, jid }, 'duplicate delivery, skipping')
+        continue
+      }
 
       // In a group, key.participant is the actual sender; remoteJid is the group.
       // For our own (work-phone) messages, fall back to the bot's own JID.
@@ -217,7 +245,12 @@ async function startSock() {
         m.key.participant || m.participant || (m.key.fromMe ? sock.user?.id || '' : '')
       // Strip any device suffix, e.g. "6588257614:12@s.whatsapp.net" -> "6588257614".
       const sender_number = participant.split('@')[0].split(':')[0]
-      const sender_name = m.pushName || sender_number
+      // pushName is absent on the first delivery of a work-phone message and
+      // only set on the server-confirmed copy — which dedupe now discards. For
+      // our own messages take the name off the socket so those rows stay
+      // attributed to the display name rather than falling back to the number.
+      const sender_name =
+        m.pushName || (m.key.fromMe ? sock.user?.name : '') || sender_number
 
       await forwardToPython({
         group_id: jid,
