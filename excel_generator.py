@@ -79,12 +79,11 @@ def generate_monthly_excel(
     """
     Build a monthly Excel workbook.
     - One sheet per week
-    - Rows: one per location (in fixed order), with sub-rows for each day
+    - Rows: only days that have logged activity, grouped by location
     - Columns: Day | Date | Main Location | Sub Location | Description | Manpower
 
-    Logs with no description are dropped: a row whose activity column is blank
-    carries no information. A day left with nothing renders as "-" like any
-    other day without logs.
+    Every row carries a real description. Entries without one are dropped, and
+    days with no activity are not written at all rather than padded with "-".
     """
     wb = Workbook()
     wb.remove(wb.active)  # remove default sheet
@@ -128,48 +127,38 @@ def generate_monthly_excel(
         week_days = [week_start + timedelta(days=d) for d in range(7)]
 
         for location in locations:
+            wrote_any = False
             for day in week_days:
-                # Skip days outside the month
                 if day.month != month:
-                    day_label = f"{DAY_NAMES[day.weekday()]} ({day.strftime('%d/%m')})"
-                    cells_data = [day_label, day.strftime("%d %b %Y"), location, "-", "-", "-"]
-                    for col, val in enumerate(cells_data, start=1):
-                        cell = ws.cell(row=current_row, column=col, value=val)
-                        _style_cell(cell, font=CELL_FONT,
-                                    alignment=Alignment(vertical="top", wrap_text=True))
-                    current_row += 1
-                    continue
+                    continue  # spill-over days from the neighbouring month
 
                 day_label = f"{DAY_NAMES[day.weekday()]} ({day.strftime('%d/%m')})"
-                day_logs = log_index.get((location, day.isoformat()), [])
 
-                if not day_logs:
-                    cells_data = [day_label, day.strftime("%d %b %Y"), location, "-", "-", "-"]
+                # Only days with actual logged activity get a row. Previously a
+                # row was written for every location on every day, padded with
+                # "-" — on July 2026 that was 3337 filler rows against 313 real
+                # ones, burying the report in blanks.
+                for entry in log_index.get((location, day.isoformat()), []):
+                    cells_data = [
+                        day_label,
+                        day.strftime("%d %b %Y"),
+                        entry.get("main_location", location),
+                        entry.get("sub_location", ""),
+                        entry.get("description", ""),
+                        entry.get("manpower", ""),
+                    ]
                     for col, val in enumerate(cells_data, start=1):
                         cell = ws.cell(row=current_row, column=col, value=val)
                         _style_cell(cell, font=CELL_FONT,
                                     alignment=Alignment(vertical="top", wrap_text=True))
-                    ws.row_dimensions[current_row].height = 20
+                    ws.row_dimensions[current_row].height = 35
                     current_row += 1
-                else:
-                    for entry in day_logs:
-                        cells_data = [
-                            day_label,
-                            day.strftime("%d %b %Y"),
-                            entry.get("main_location", location),
-                            entry.get("sub_location", ""),
-                            entry.get("description", ""),
-                            entry.get("manpower", ""),
-                        ]
-                        for col, val in enumerate(cells_data, start=1):
-                            cell = ws.cell(row=current_row, column=col, value=val)
-                            _style_cell(cell, font=CELL_FONT,
-                                        alignment=Alignment(vertical="top", wrap_text=True))
-                        ws.row_dimensions[current_row].height = 35
-                        current_row += 1
+                    wrote_any = True
 
-            # Blank separator row between locations
-            current_row += 1
+            # Separator only after a location that actually produced rows,
+            # otherwise absent locations leave a run of blank rows behind.
+            if wrote_any:
+                current_row += 1
 
     buf = io.BytesIO()
     wb.save(buf)
