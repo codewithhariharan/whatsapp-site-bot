@@ -1,0 +1,18 @@
+{
+  "name": "history-harvester",
+  "version": "1.0.0",
+  "description": "One-off tool: links a throwaway WhatsApp device and dumps group message history (including photo captions) to JSON for backfill.py.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.0",
+    "pino": "^9.5.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
