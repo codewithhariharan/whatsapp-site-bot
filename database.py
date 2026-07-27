@@ -4,6 +4,25 @@ from config import settings
 
 db = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
+# PostgREST caps every response (1000 rows by default) and gives no signal that
+# it truncated. A single group passed that in July 2026, so any query that can
+# return a whole project's history has to page or it silently loses the tail.
+_PAGE = 1000
+
+
+def _fetch_all(build_query) -> list[dict]:
+    """Run a query in pages until a short page says we've reached the end.
+
+    `build_query` takes no arguments and returns a fresh, un-executed query;
+    a new one is needed per page because .range() is not re-assignable.
+    """
+    rows: list[dict] = []
+    while True:
+        page = build_query().range(len(rows), len(rows) + _PAGE - 1).execute().data
+        rows.extend(page)
+        if len(page) < _PAGE:
+            return rows
+
 
 # ── Groups ────────────────────────────────────────────────────────────────────
 
@@ -64,15 +83,13 @@ def insert_log(
 
 
 def get_logs_for_date(group_id: str, log_date: date) -> list[dict]:
-    result = (
+    return _fetch_all(lambda: (
         db.table("daily_logs")
         .select("*")
         .eq("group_id", group_id)
         .eq("log_date", log_date.isoformat())
         .order("logged_at")
-        .execute()
-    )
-    return result.data
+    ))
 
 
 def get_logs_for_month(group_id: str, year: int, month: int) -> list[dict]:
@@ -80,27 +97,23 @@ def get_logs_for_month(group_id: str, year: int, month: int) -> list[dict]:
     last_day = monthrange(year, month)[1]
     start = date(year, month, 1).isoformat()
     end = date(year, month, last_day).isoformat()
-    result = (
+    return _fetch_all(lambda: (
         db.table("daily_logs")
         .select("*")
         .eq("group_id", group_id)
         .gte("log_date", start)
         .lte("log_date", end)
         .order("log_date")
-        .execute()
-    )
-    return result.data
+    ))
 
 
 def get_all_logs(group_id: str) -> list[dict]:
-    result = (
+    return _fetch_all(lambda: (
         db.table("daily_logs")
         .select("*")
         .eq("group_id", group_id)
         .order("log_date")
-        .execute()
-    )
-    return result.data
+    ))
 
 
 # ── Reorder sessions ──────────────────────────────────────────────────────────
@@ -157,11 +170,9 @@ def upsert_dwall_panel(group_id: str, panel_data: dict):
 
 
 def get_all_panels(group_id: str) -> list[dict]:
-    result = (
+    return _fetch_all(lambda: (
         db.table("dwall_panels")
         .select("*")
         .eq("group_id", group_id)
         .order("panel_number")
-        .execute()
-    )
-    return result.data
+    ))
