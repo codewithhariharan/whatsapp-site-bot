@@ -20,6 +20,7 @@ import makeWASocket, {
 import express from 'express'
 import qrcode from 'qrcode-terminal'
 import pino from 'pino'
+import { rmSync } from 'node:fs'
 
 const PORT = parseInt(process.env.PORT || '8088', 10)
 const AUTH_DIR = process.env.AUTH_DIR || './auth_info'
@@ -57,6 +58,10 @@ function recordSentId(id) {
 // below always use the live connection.
 let sock = null
 let connected = false
+// Distinguishes "waiting for a human to enter the pairing code" (restarting
+// won't help) from "the socket dropped" (restarting might). /health reports
+// the former as healthy so a restart policy doesn't loop while we wait.
+let linkState = 'connecting' // connecting | awaiting_link | open | closed
 
 // ── Extract plain text from the many shapes a WhatsApp message can take ───────
 function extractText(message) {
@@ -118,6 +123,7 @@ async function startSock() {
     // number configured we request a code here (correct timing); otherwise we
     // fall back to rendering the QR.
     if (qr) {
+      linkState = 'awaiting_link'
       if (PAIRING_NUMBER) {
         if (!pairingRequested) {
           pairingRequested = true
@@ -143,19 +149,34 @@ async function startSock() {
 
     if (connection === 'open') {
       connected = true
+      linkState = 'open'
       logger.info('WhatsApp connection open')
     }
 
     if (connection === 'close') {
       connected = false
+      linkState = 'closed'
       const statusCode = lastDisconnect?.error?.output?.statusCode
       const loggedOut = statusCode === DisconnectReason.loggedOut
       logger.warn({ statusCode, loggedOut }, 'WhatsApp connection closed')
       if (loggedOut) {
-        // Session was invalidated (unlinked). Delete AUTH_DIR and re-scan QR.
+        // Session was invalidated (unlinked). The stored creds are now dead
+        // weight: Baileys will keep replaying them and never surface a pairing
+        // code, so clear them and exit non-zero. Exiting is what makes the
+        // failure visible — the process used to stay alive with a dead socket,
+        // which kept the HTTP healthcheck green and stopped Railway's
+        // restartPolicy from ever firing. On restart we boot with an empty
+        // AUTH_DIR and print a fresh pairing code.
         logger.error(
-          `Logged out — delete ${AUTH_DIR} and restart to re-link the device.`,
+          `Logged out — clearing ${AUTH_DIR} and exiting so the supervisor ` +
+            'restarts us with a fresh pairing code.',
         )
+        try {
+          rmSync(AUTH_DIR, { recursive: true, force: true })
+        } catch (err) {
+          logger.error({ err }, `Failed to clear ${AUTH_DIR}`)
+        }
+        process.exit(1)
       } else {
         // Transient drop — reconnect after a short delay. Reconnecting
         // instantly hammers WhatsApp's servers and gets rate-limited (405),
@@ -226,8 +247,16 @@ function requireSecret(req, res) {
   return true
 }
 
+// Reports the WhatsApp socket, not just the HTTP server — an Express process
+// with a dead socket is exactly the failure this bridge used to hide.
+// 'awaiting_link' stays 200: it needs a human with the phone, not a restart.
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', connected })
+  const healthy = connected || linkState === 'awaiting_link'
+  res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'ok' : 'degraded',
+    connected,
+    state: linkState,
+  })
 })
 
 app.post('/send', async (req, res) => {
