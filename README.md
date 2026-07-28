@@ -150,7 +150,15 @@ Description: Honeycomb rectification works in progress
 Manpower: Worker – 1
 ```
 
-The bot is flexible — engineers don't need to follow the exact format. Claude will parse the meaning.
+The bot is flexible — engineers don't need to follow the exact format. Claude
+will parse the meaning. Two locations are the norm: the first is the main
+location (the broad area), the second the sub location (the detail within it).
+
+That header is *not* required, though. A message naming a single location
+("Rebar fixing at Shaft B, 4 workers") is logged with that location as the main
+location and a blank sub location, and a message with no location at all is
+still logged, under `Unknown`. Only genuine chatter — greetings, "noted", leave
+notices — is ignored.
 
 ---
 
