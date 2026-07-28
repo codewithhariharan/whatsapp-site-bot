@@ -7,7 +7,7 @@ A WhatsApp bot that turns a construction site's group chat into a structured rep
 - **Natural-language logging** — engineers write updates however they like; Claude (`claude-sonnet-4-6`) extracts location, description, and manpower into structured records.
 - **Conversational queries** — `/ask when was Panel 39 cast?` runs natural-language Q&A over the full site history.
 - **Automated reporting** — one-command daily summaries and monthly Excel exports (openpyxl), including a specialised D-Wall panel tracker.
-- **Multi-tenant** — one bot number serves many sites; each WhatsApp group gets its own isolated dataset and configuration.
+- **Multi-tenant** — one bot number can serve many sites, each WhatsApp group with its own isolated dataset and configuration. Currently pinned to a single group (see below).
 - **Group support** — the official Cloud API handles 1:1 chats; an optional Node/Baileys bridge extends the bot into WhatsApp groups.
 
 ## Tech Stack
@@ -162,9 +162,31 @@ notices — is ignored.
 
 ---
 
-## Sharing Across Multiple Contracts
+## Which Group the Bot Serves
 
-Just add the same bot number to any other WhatsApp group. Each group has:
+The bot currently answers in **one group only**: `CR106 LTA PJT (Site Work)`.
+The bot phone can sit in any number of other groups — their messages are read
+and dropped, and never reach the database.
+
+The group is matched on its name (case- and whitespace-insensitive) and is set
+in two places, which must agree:
+
+| Where | Variable | Default |
+|---|---|---|
+| Bridge (`baileys-bridge/.env`) | `ALLOWED_GROUP_NAME` | `CR106 LTA PJT (Site Work)` |
+| Python bot (`.env`) | `ALLOWED_GROUP_NAME` | `CR106 LTA PJT (Site Work)` |
+
+The bridge filters first, at the transport edge; the Python check is a backstop
+for a bridge that is misconfigured or running older code. Both default to the
+group above, so neither `.env` needs the variable unless you're changing it.
+
+**If the group is renamed in WhatsApp, update both values** or the bot goes
+quiet.
+
+### Serving more than one group
+
+Set `ALLOWED_GROUP_NAME=` (empty) in both `.env` files. The bot then serves
+every group its phone is in, and each group gets:
 - Its own separate database (logs, location order, panel records)
 - Its own `/setorder` configuration
 - Its own Excel exports

@@ -5,7 +5,13 @@ from whatsapp_client import send_message
 import commands as cmd
 
 
-async def handle_message(group_id: str, sender_name: str, sender_number: str, text: str):
+async def handle_message(
+    group_id: str,
+    sender_name: str,
+    sender_number: str,
+    text: str,
+    group_name: str | None = None,
+):
     """Route an incoming message to the correct handler."""
 
     text = text.strip()
@@ -73,7 +79,7 @@ async def handle_message(group_id: str, sender_name: str, sender_number: str, te
 
     if msg_type == "log":
         data = parsed.get("data", {})
-        db.upsert_group(group_id)
+        db.upsert_group(group_id, group_name)
         db.insert_log(
             group_id=group_id,
             log_date=date.today(),
@@ -89,7 +95,7 @@ async def handle_message(group_id: str, sender_name: str, sender_number: str, te
 
     elif msg_type == "dwall":
         data = parsed.get("data", {})
-        db.upsert_group(group_id)
+        db.upsert_group(group_id, group_name)
         db.upsert_dwall_panel(group_id, data)
         panel_num = data.get("panel_number", "Panel")
         await send_message(group_id, f"✅ {panel_num} logged in D-Wall tracker.")

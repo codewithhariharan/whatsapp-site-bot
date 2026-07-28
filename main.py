@@ -34,10 +34,16 @@ async def verify(request: Request):
 
 # ── Incoming messages ─────────────────────────────────────────────────────────
 
-async def _safe_handle(group_id: str, sender_name: str, sender_number: str, text: str):
+async def _safe_handle(
+    group_id: str,
+    sender_name: str,
+    sender_number: str,
+    text: str,
+    group_name: str | None = None,
+):
     """Run a message handler in the background, logging any failure."""
     try:
-        await handle_message(group_id, sender_name, sender_number, text)
+        await handle_message(group_id, sender_name, sender_number, text, group_name)
     except Exception:
         logger.exception("handle_message failed for %s: %r", group_id, text)
 
@@ -121,10 +127,18 @@ async def baileys_incoming(request: Request, background_tasks: BackgroundTasks):
     if not group_id or not text:
         return {"status": "ignored"}
 
+    group_name = (data.get("group_name") or "").strip()
+    allowed = settings.ALLOWED_GROUP_NAME.strip()
+    if allowed and group_name.casefold() != allowed.casefold():
+        logger.info("Ignoring message from non-serviced group %r", group_name or group_id)
+        return {"status": "ignored"}
+
     sender_number = data.get("sender_number", "")
     sender_name = data.get("sender_name") or sender_number
 
-    background_tasks.add_task(_safe_handle, group_id, sender_name, sender_number, text)
+    background_tasks.add_task(
+        _safe_handle, group_id, sender_name, sender_number, text, group_name
+    )
     return {"status": "ok"}
 
 

@@ -27,10 +27,13 @@ def _fetch_all(build_query) -> list[dict]:
 # ── Groups ────────────────────────────────────────────────────────────────────
 
 def upsert_group(group_id: str, group_name: str = None):
-    db.table("groups").upsert(
-        {"group_id": group_id, "group_name": group_name},
-        on_conflict="group_id"
-    ).execute()
+    # Omit group_name when we don't have one: a payload column that isn't sent
+    # is left out of the ON CONFLICT SET list, so a known name survives a later
+    # write from a transport that can't see it (the Cloud API 1:1 webhook).
+    row = {"group_id": group_id}
+    if group_name:
+        row["group_name"] = group_name
+    db.table("groups").upsert(row, on_conflict="group_id").execute()
 
 
 # ── Location order ────────────────────────────────────────────────────────────

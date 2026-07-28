@@ -30,6 +30,14 @@ const SHARED_SECRET = process.env.BRIDGE_SHARED_SECRET
 if (!PYTHON_INGEST_URL) throw new Error('PYTHON_INGEST_URL is required')
 if (!SHARED_SECRET) throw new Error('BRIDGE_SHARED_SECRET is required')
 
+// Only this group is served. The bot phone is in other groups too, and nothing
+// from them should reach the database, so every other group is dropped here at
+// the transport edge. Matched on the group's subject (its display name), case-
+// and whitespace-insensitive. Set to an empty string to serve every group.
+const ALLOWED_GROUP_NAME = (
+  process.env.ALLOWED_GROUP_NAME ?? 'CR106 LTA PJT (Site Work)'
+).trim()
+
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' })
 
 const RECONNECT_DELAY_MS = 5000 // wait before reconnecting to avoid 405 rate-limiting
@@ -83,6 +91,48 @@ let connected = false
 // the former as healthy so a restart policy doesn't loop while we wait.
 let linkState = 'connecting' // connecting | awaiting_link | open | closed
 
+// ── Group names ───────────────────────────────────────────────────────────────
+// jid -> subject. Filled in bulk on connect and kept current by groups.update,
+// so the per-message allow-list check is a Map lookup rather than a round trip
+// to WhatsApp (groupMetadata is rate-limited and would throttle a busy group).
+const groupSubjects = new Map()
+
+async function refreshGroupSubjects() {
+  try {
+    const groups = await sock.groupFetchAllParticipating()
+    for (const [jid, meta] of Object.entries(groups)) {
+      if (meta?.subject) groupSubjects.set(jid, meta.subject)
+    }
+    logger.info({ count: groupSubjects.size }, 'Cached group names')
+  } catch (err) {
+    logger.error({ err }, 'Failed to fetch group list')
+  }
+}
+
+// Returns the subject, or '' if it can't be determined.
+async function getGroupSubject(jid) {
+  const cached = groupSubjects.get(jid)
+  if (cached) return cached
+  // Not in the bulk fetch — e.g. the bot was added to this group after connect.
+  try {
+    const meta = await sock.groupMetadata(jid)
+    if (meta?.subject) {
+      groupSubjects.set(jid, meta.subject)
+      return meta.subject
+    }
+  } catch (err) {
+    logger.error({ err, jid }, 'groupMetadata lookup failed')
+  }
+  return ''
+}
+
+const normalizeName = (name) => (name || '').trim().toLowerCase()
+
+function isAllowedGroup(subject) {
+  if (!ALLOWED_GROUP_NAME) return true
+  return normalizeName(subject) === normalizeName(ALLOWED_GROUP_NAME)
+}
+
 // ── Extract plain text from the many shapes a WhatsApp message can take ───────
 function extractText(message) {
   if (!message) return ''
@@ -98,7 +148,7 @@ function extractText(message) {
 }
 
 // ── Forward an incoming group message to the Python bot ───────────────────────
-async function forwardToPython({ group_id, sender_name, sender_number, text }) {
+async function forwardToPython({ group_id, group_name, sender_name, sender_number, text }) {
   try {
     const resp = await fetch(PYTHON_INGEST_URL, {
       method: 'POST',
@@ -106,7 +156,7 @@ async function forwardToPython({ group_id, sender_name, sender_number, text }) {
         'Content-Type': 'application/json',
         'X-Bridge-Secret': SHARED_SECRET,
       },
-      body: JSON.stringify({ group_id, sender_name, sender_number, text }),
+      body: JSON.stringify({ group_id, group_name, sender_name, sender_number, text }),
     })
     if (!resp.ok) {
       logger.error(
@@ -171,6 +221,11 @@ async function startSock() {
       connected = true
       linkState = 'open'
       logger.info('WhatsApp connection open')
+      logger.info(
+        { group: ALLOWED_GROUP_NAME || '(all groups)' },
+        'Serving group',
+      )
+      refreshGroupSubjects()
     }
 
     if (connection === 'close') {
@@ -208,6 +263,20 @@ async function startSock() {
     }
   })
 
+  // Keep cached names current: a rename must not silently stop (or start)
+  // forwarding a group whose old subject is still in the Map.
+  sock.ev.on('groups.update', (updates) => {
+    for (const u of updates) {
+      if (u?.id && u.subject) groupSubjects.set(u.id, u.subject)
+    }
+  })
+
+  sock.ev.on('groups.upsert', (groups) => {
+    for (const g of groups) {
+      if (g?.id && g.subject) groupSubjects.set(g.id, g.subject)
+    }
+  })
+
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return // only brand-new messages, not history sync
 
@@ -230,6 +299,14 @@ async function startSock() {
 
       const text = previewText
       if (!text) continue
+
+      // Serve only the configured group. Checked before dedupe so an ignored
+      // group's ids never take up room in the bounded set.
+      const group_name = await getGroupSubject(jid)
+      if (!isAllowedGroup(group_name)) {
+        logger.debug({ jid, group_name }, 'group not on the allow-list, skipping')
+        continue
+      }
 
       // Drop repeat deliveries of a message we've already forwarded. Checked
       // last so the set only ever holds ids we actually acted on. A message
@@ -254,6 +331,7 @@ async function startSock() {
 
       await forwardToPython({
         group_id: jid,
+        group_name,
         sender_name,
         sender_number,
         text,

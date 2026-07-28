@@ -41,6 +41,7 @@ is saved in `AUTH_DIR` (`./auth_info`) so you only scan once.
 | `BRIDGE_SHARED_SECRET` | Shared secret; **must equal** `BRIDGE_SHARED_SECRET` in the Python `.env` |
 | `PORT` | HTTP port the bridge listens on (default `8088`) |
 | `AUTH_DIR` | Where the WhatsApp session is stored (default `./auth_info`) |
+| `ALLOWED_GROUP_NAME` | The only group forwarded, matched on group name, case- and whitespace-insensitive (default `CR106 LTA PJT (Site Work)`). Empty = forward every group. **Must equal** `ALLOWED_GROUP_NAME` in the Python `.env` |
 | `LOG_LEVEL` | pino level (default `info`) |
 
 The Python service needs two matching variables (see its `.env.example`):
