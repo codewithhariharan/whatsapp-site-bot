@@ -165,3 +165,30 @@ def get_all_panels(group_id: str) -> list[dict]:
         .execute()
     )
     return result.data
+
+
+def get_all_logs(group_id: str) -> list[dict]:
+    """Fetch every log for a group, oldest first.
+
+    Supabase caps a single select at 1000 rows by default, so page explicitly:
+    a full-history export runs well past that and would otherwise truncate
+    silently at exactly 1000 entries.
+    """
+    PAGE = 1000
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        result = (
+            db.table("daily_logs")
+            .select("*")
+            .eq("group_id", group_id)
+            .order("log_date")
+            .order("logged_at")
+            .range(offset, offset + PAGE - 1)
+            .execute()
+        )
+        batch = result.data
+        rows.extend(batch)
+        if len(batch) < PAGE:
+            return rows
+        offset += PAGE

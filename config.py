@@ -15,6 +15,15 @@ class Settings(BaseSettings):
     BAILEYS_BRIDGE_URL: str = ""      # e.g. https://your-bridge.up.railway.app
     BRIDGE_SHARED_SECRET: str = ""    # must match the bridge's BRIDGE_SHARED_SECRET
 
+    # Comma-separated group JIDs the bot will accept logs from. Enforced here
+    # as well as in the bridge so a misconfigured or compromised bridge cannot
+    # inject data from groups this deployment was never meant to see.
+    ALLOWED_GROUP_IDS: str = ""
+
+    @property
+    def allowed_group_ids(self) -> set[str]:
+        return {g.strip() for g in self.ALLOWED_GROUP_IDS.split(",") if g.strip()}
+
     class Config:
         env_file = ".env"
 

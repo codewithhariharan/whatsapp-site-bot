@@ -274,3 +274,58 @@ def generate_dwall_excel(panels: list[dict]) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def generate_full_excel(logs: list[dict]) -> bytes:
+    """Build a single-sheet export of every log entry, chronological.
+
+    Unlike generate_monthly_excel this does NOT pivot by location or emit "-"
+    filler rows for quiet days: it is a flat transcript of what was actually
+    logged, one row per entry, ordered by date then time of logging.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "All Logs"
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+
+    col_widths = [12, 14, 22, 30, 55, 20]
+    col_headers = [
+        "Day", "Date", "Main Location", "Sub Location",
+        "Description / Activity", "Manpower",
+    ]
+    for i, (w, h) in enumerate(zip(col_widths, col_headers), start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+        cell = ws.cell(row=1, column=i, value=h)
+        _style_cell(
+            cell, font=HEADER_FONT, fill=HEADER_FILL,
+            alignment=Alignment(horizontal="center", vertical="center", wrap_text=True),
+        )
+    ws.row_dimensions[1].height = 30
+
+    row = 2
+    for entry in logs:
+        raw = entry.get("log_date")
+        log_date = date.fromisoformat(raw) if isinstance(raw, str) else raw
+        cells = [
+            f"{DAY_NAMES[log_date.weekday()]} ({log_date.strftime('%d/%m')})",
+            log_date.strftime("%d %b %Y"),
+            entry.get("main_location") or "",
+            entry.get("sub_location") or "",
+            entry.get("description") or "",
+            entry.get("manpower") or "",
+        ]
+        for col, val in enumerate(cells, start=1):
+            cell = ws.cell(row=row, column=col, value=val)
+            _style_cell(
+                cell, font=CELL_FONT,
+                alignment=Alignment(vertical="top", wrap_text=True),
+            )
+        ws.row_dimensions[row].height = 35
+        row += 1
+
+    ws.auto_filter.ref = f"A1:F{max(row - 1, 1)}"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

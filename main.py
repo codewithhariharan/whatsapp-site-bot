@@ -121,6 +121,11 @@ async def baileys_incoming(request: Request, background_tasks: BackgroundTasks):
     if not group_id or not text:
         return {"status": "ignored"}
 
+    allowed = settings.allowed_group_ids
+    if allowed and group_id not in allowed:
+        logger.warning("Rejected message from non-allowlisted group %s", group_id)
+        return {"status": "ignored"}
+
     sender_number = data.get("sender_number", "")
     sender_name = data.get("sender_name") or sender_number
 
