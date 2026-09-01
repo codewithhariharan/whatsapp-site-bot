@@ -74,7 +74,8 @@ gcloud compute disks create site-bot-data \
 gcloud compute instances create "$VM" \
   --zone="$ZONE" \
   --machine-type=e2-small \
-  --image-family=cos-stable --image-project=cos-cloud \
+  --image-family=debian-12 --image-project=debian-cloud \
+  --metadata-from-file=startup-script=deploy/gcp/startup.sh \
   --address="$IP" \
   --disk="name=site-bot-data,device-name=botdata,mode=rw,auto-delete=no" \
   --scopes=cloud-platform \
@@ -98,9 +99,8 @@ Provisioned. Next:
        #   GRANT USAGE ON SCHEMA public TO "site-bot-sa@$PROJECT.iam";
   1. Point DNS at $IP and set BOT_DOMAIN to that name.
   2. gcloud compute ssh $VM --zone=$ZONE
-  3. Format+mount the data disk ONCE (skip if already done):
-       sudo mkfs.ext4 -F /dev/disk/by-id/google-botdata
-       sudo mkdir -p /mnt/disks/botdata && sudo mount /dev/disk/by-id/google-botdata /mnt/disks/botdata
+  3. The startup script installs Docker + Compose and mounts the data disk.
+     Confirm before continuing:  docker compose version && ls /mnt/disks/botdata
   4. Copy .env and bridge.env up, then: docker compose -f docker-compose.prod.yml up -d
   5. docker compose logs -f bridge   # scan the pairing QR once
   6. Request access to the Claude models in Vertex AI Model Garden if you have
