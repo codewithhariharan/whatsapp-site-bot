@@ -48,6 +48,29 @@ class TestMonthlyExcel:
         wb = load_workbook(io.BytesIO(data))
         assert len(wb.sheetnames) >= 1  # one sheet per week
 
+    def test_log_rows_actually_land_in_the_sheet(self):
+        """Guards the empty-report regression.
+
+        generate_monthly_excel indexes logs by (location, log_date) and looks
+        them up with date.isoformat(). If log_date arrives as a date object
+        rather than an ISO string the key never matches and every cell renders
+        "-" — a valid, openable, entirely empty workbook, which is why
+        test_produces_openable_workbook missed it twice. database._coerce is
+        what keeps the read side on strings.
+        """
+        logs = [{
+            "main_location": "Zone1", "sub_location": "GL-A",
+            "description": "Rebar fixing", "manpower": "2",
+            "log_date": date(2026, 6, 15).isoformat(),
+        }]
+        data = xls.generate_monthly_excel("g1", 2026, 6, logs, ["Zone1"])
+        wb = load_workbook(io.BytesIO(data))
+        found = any(
+            cell.value == "Rebar fixing"
+            for ws in wb.worksheets for row in ws.iter_rows() for cell in row
+        )
+        assert found, "log description missing — the date-key lookup missed"
+
 
 class TestDwallExcel:
     def test_produces_workbook_with_panel_tracker_sheet(self):

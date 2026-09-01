@@ -8,8 +8,9 @@ The engine is built lazily. Creating it at import time would open a socket the
 moment anything imports this module, which breaks test collection and makes a
 cold start fail on a transient network blip instead of on first use.
 """
-from datetime import date
+from datetime import date, datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -52,8 +53,27 @@ def get_engine() -> Engine:
     return _engine
 
 
+def _coerce(value):
+    """Return ids and dates as strings, the way the Supabase client used to.
+
+    Supabase delivered rows as JSON, so UUIDs and dates arrived as strings and
+    the rest of the app was written against those forms. SQLAlchemy returns
+    real UUID/date/datetime objects instead, which silently breaks equality:
+    excel_generator indexes logs by log_date and looks them up with
+    date.isoformat(), so a date object key never matches and every cell in the
+    monthly report renders "-". Coerce here rather than in seven callers.
+    """
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, datetime):   # must precede date: datetime subclasses it
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
+
+
 def _rows(result) -> list[dict]:
-    return [dict(r) for r in result.mappings()]
+    return [{k: _coerce(v) for k, v in r.items()} for r in result.mappings()]
 
 
 # ── Groups ────────────────────────────────────────────────────────────────────
