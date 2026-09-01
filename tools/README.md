@@ -27,3 +27,16 @@ produced by the live Haiku parser over the same window):
 
 Treat the output as a superset to review, not a drop-in replacement for
 parser output.
+
+## build_full_excel.py
+
+Produces the same workbook `/excel2` sends, from either source.
+
+    # from a chat export — no GCP, no .env, no deployment
+    python tools/build_full_excel.py --chat /path/to/_chat.txt
+
+    # from Cloud SQL — needs .env and application-default credentials
+    python tools/build_full_excel.py --group '1203630xxxxxxxxxx@g.us'
+
+Only `openpyxl` is needed for the `--chat` path; `excel_generator` has no
+database or GCP imports, so it runs on a laptop with nothing configured.
