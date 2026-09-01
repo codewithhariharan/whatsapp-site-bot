@@ -9,7 +9,7 @@ from message_handler import handle_message
 
 logging.basicConfig(
     # INFO (not DEBUG): DEBUG logs full request/response headers, which include
-    # the Supabase service_role key and WhatsApp token. Keep secrets out of logs.
+    # the WhatsApp token and bridge secret. Keep secrets out of logs.
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )

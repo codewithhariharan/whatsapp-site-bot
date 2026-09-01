@@ -1,4 +1,5 @@
--- Run this in your Supabase SQL editor
+-- Cloud SQL for PostgreSQL. Apply with:
+--   gcloud sql connect <instance> --user=postgres --database=sitebot < schema.sql
 
 CREATE TABLE groups (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,

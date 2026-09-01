@@ -1,40 +1,112 @@
+"""Data access against Cloud SQL for PostgreSQL.
+
+Connections go through the Cloud SQL Python Connector rather than a host/port:
+it handles TLS and authorises via the runtime service account, so no database
+password or certificate is stored on the VM.
+
+The engine is built lazily. Creating it at import time would open a socket the
+moment anything imports this module, which breaks test collection and makes a
+cold start fail on a transient network blip instead of on first use.
+"""
 from datetime import date
-from supabase import create_client
+from typing import Any
+
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+
 from config import settings
 
-db = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+_engine: Engine | None = None
+
+
+def get_engine() -> Engine:
+    global _engine
+    if _engine is not None:
+        return _engine
+
+    from google.cloud.sql.connector import Connector, IPTypes
+
+    ip_type = IPTypes.PRIVATE if settings.DB_PRIVATE_IP else IPTypes.PUBLIC
+    connector = Connector(ip_type=ip_type)
+
+    def _connect():
+        return connector.connect(
+            settings.INSTANCE_CONNECTION_NAME,
+            "pg8000",
+            user=settings.DB_USER,
+            password=settings.DB_PASSWORD or None,
+            db=settings.DB_NAME,
+            enable_iam_auth=settings.DB_IAM_AUTH,
+        )
+
+    _engine = create_engine(
+        "postgresql+pg8000://",
+        creator=_connect,
+        # Cloud SQL closes idle connections; recycle below that window and test
+        # liveness on checkout so a stale socket surfaces as a retry, not a 500.
+        pool_size=5,
+        max_overflow=2,
+        pool_recycle=1800,
+        pool_pre_ping=True,
+    )
+    return _engine
+
+
+def _rows(result) -> list[dict]:
+    return [dict(r) for r in result.mappings()]
 
 
 # ── Groups ────────────────────────────────────────────────────────────────────
 
-def upsert_group(group_id: str, group_name: str = None):
-    db.table("groups").upsert(
-        {"group_id": group_id, "group_name": group_name},
-        on_conflict="group_id"
-    ).execute()
+def upsert_group(group_id: str, group_name: str | None = None):
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO groups (group_id, group_name)
+                VALUES (:group_id, :group_name)
+                ON CONFLICT (group_id) DO UPDATE
+                    SET group_name = COALESCE(EXCLUDED.group_name, groups.group_name)
+            """),
+            {"group_id": group_id, "group_name": group_name},
+        )
 
 
 # ── Location order ────────────────────────────────────────────────────────────
 
 def set_location_order(group_id: str, locations: list[str]):
-    """Replace the location order for a group."""
-    db.table("location_order").delete().eq("group_id", group_id).execute()
-    rows = [
-        {"group_id": group_id, "location_name": loc, "order_index": i}
-        for i, loc in enumerate(locations)
-    ]
-    db.table("location_order").insert(rows).execute()
+    """Replace the location order for a group.
+
+    Delete and insert run in ONE transaction: a failure partway through would
+    otherwise leave the group with no ordering at all.
+    """
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("DELETE FROM location_order WHERE group_id = :group_id"),
+            {"group_id": group_id},
+        )
+        if locations:
+            conn.execute(
+                text("""
+                    INSERT INTO location_order (group_id, location_name, order_index)
+                    VALUES (:group_id, :location_name, :order_index)
+                """),
+                [
+                    {"group_id": group_id, "location_name": loc, "order_index": i}
+                    for i, loc in enumerate(locations)
+                ],
+            )
 
 
 def get_location_order(group_id: str) -> list[str]:
-    result = (
-        db.table("location_order")
-        .select("location_name")
-        .eq("group_id", group_id)
-        .order("order_index")
-        .execute()
-    )
-    return [r["location_name"] for r in result.data]
+    with get_engine().connect() as conn:
+        result = conn.execute(
+            text("""
+                SELECT location_name FROM location_order
+                WHERE group_id = :group_id ORDER BY order_index
+            """),
+            {"group_id": group_id},
+        )
+        return [r["location_name"] for r in _rows(result)]
 
 
 # ── Daily logs ────────────────────────────────────────────────────────────────
@@ -50,90 +122,114 @@ def insert_log(
     manpower: str,
     raw_message: str,
 ):
-    db.table("daily_logs").insert({
-        "group_id": group_id,
-        "log_date": log_date.isoformat(),
-        "sender_name": sender_name,
-        "sender_number": sender_number,
-        "main_location": main_location,
-        "sub_location": sub_location,
-        "description": description,
-        "manpower": manpower,
-        "raw_message": raw_message,
-    }).execute()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO daily_logs (
+                    group_id, log_date, sender_name, sender_number,
+                    main_location, sub_location, description, manpower, raw_message
+                ) VALUES (
+                    :group_id, :log_date, :sender_name, :sender_number,
+                    :main_location, :sub_location, :description, :manpower, :raw_message
+                )
+            """),
+            {
+                "group_id": group_id, "log_date": log_date,
+                "sender_name": sender_name, "sender_number": sender_number,
+                "main_location": main_location, "sub_location": sub_location,
+                "description": description, "manpower": manpower,
+                "raw_message": raw_message,
+            },
+        )
 
 
 def get_logs_for_date(group_id: str, log_date: date) -> list[dict]:
-    result = (
-        db.table("daily_logs")
-        .select("*")
-        .eq("group_id", group_id)
-        .eq("log_date", log_date.isoformat())
-        .order("logged_at")
-        .execute()
-    )
-    return result.data
+    with get_engine().connect() as conn:
+        return _rows(conn.execute(
+            text("""
+                SELECT * FROM daily_logs
+                WHERE group_id = :group_id AND log_date = :log_date
+                ORDER BY logged_at
+            """),
+            {"group_id": group_id, "log_date": log_date},
+        ))
 
 
 def get_logs_for_month(group_id: str, year: int, month: int) -> list[dict]:
     from calendar import monthrange
-    last_day = monthrange(year, month)[1]
-    start = date(year, month, 1).isoformat()
-    end = date(year, month, last_day).isoformat()
-    result = (
-        db.table("daily_logs")
-        .select("*")
-        .eq("group_id", group_id)
-        .gte("log_date", start)
-        .lte("log_date", end)
-        .order("log_date")
-        .execute()
-    )
-    return result.data
+    start = date(year, month, 1)
+    end = date(year, month, monthrange(year, month)[1])
+    with get_engine().connect() as conn:
+        return _rows(conn.execute(
+            text("""
+                SELECT * FROM daily_logs
+                WHERE group_id = :group_id AND log_date BETWEEN :start AND :end
+                ORDER BY log_date, logged_at
+            """),
+            {"group_id": group_id, "start": start, "end": end},
+        ))
 
 
 def get_all_logs(group_id: str) -> list[dict]:
-    result = (
-        db.table("daily_logs")
-        .select("*")
-        .eq("group_id", group_id)
-        .order("log_date")
-        .execute()
-    )
-    return result.data
+    """Every log for a group, oldest first.
+
+    Streamed rather than paged. The old PostgREST client capped a select at
+    1000 rows, which silently truncated a full-history export; Postgres has no
+    such cap, and yield_per keeps a ~38k-row export off the heap in one lump.
+    """
+    with get_engine().connect().execution_options(yield_per=1000) as conn:
+        result = conn.execute(
+            text("""
+                SELECT * FROM daily_logs
+                WHERE group_id = :group_id
+                ORDER BY log_date, logged_at
+            """),
+            {"group_id": group_id},
+        )
+        return [dict(r) for r in result.mappings()]
 
 
 # ── Reorder sessions ──────────────────────────────────────────────────────────
 
 def save_reorder_session(group_id: str, session_date: date, ordered_logs: list[dict]):
-    db.table("reorder_sessions").upsert(
-        {
-            "group_id": group_id,
-            "session_date": session_date.isoformat(),
-            "ordered_logs": ordered_logs,
-        },
-        on_conflict="group_id",
-    ).execute()
+    import json
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO reorder_sessions (group_id, session_date, ordered_logs)
+                VALUES (:group_id, :session_date, CAST(:ordered_logs AS JSONB))
+                ON CONFLICT (group_id) DO UPDATE SET
+                    session_date = EXCLUDED.session_date,
+                    ordered_logs = EXCLUDED.ordered_logs
+            """),
+            {
+                "group_id": group_id,
+                "session_date": session_date,
+                "ordered_logs": json.dumps(ordered_logs, default=str),
+            },
+        )
 
 
 def get_reorder_session(group_id: str) -> dict | None:
-    result = (
-        db.table("reorder_sessions")
-        .select("*")
-        .eq("group_id", group_id)
-        .execute()
-    )
-    return result.data[0] if result.data else None
+    with get_engine().connect() as conn:
+        rows = _rows(conn.execute(
+            text("SELECT * FROM reorder_sessions WHERE group_id = :group_id"),
+            {"group_id": group_id},
+        ))
+        return rows[0] if rows else None
 
 
 def clear_reorder_session(group_id: str):
-    db.table("reorder_sessions").delete().eq("group_id", group_id).execute()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("DELETE FROM reorder_sessions WHERE group_id = :group_id"),
+            {"group_id": group_id},
+        )
 
 
 # ── D-Wall panels ─────────────────────────────────────────────────────────────
 
-_DWALL_COLUMNS = {
-    "group_id",
+_DWALL_COLUMNS = [
     "report_date", "engineer_initials", "entry_number", "panel_number", "panel_group",
     "panel_size", "guide_wall_level", "cut_off_level", "design_toe_level",
     "design_depth", "final_depth", "rock_hit",
@@ -146,49 +242,48 @@ _DWALL_COLUMNS = {
     "casting_start", "casting_end",
     "theo_volume", "actual_volume", "overbreak_pct",
     "downtime", "notes", "raw_message",
-}
+]
+_JSONB_COLUMNS = {"downtime"}
 
-def upsert_dwall_panel(group_id: str, panel_data: dict):
-    clean = {k: v for k, v in panel_data.items() if k in _DWALL_COLUMNS}
-    clean["group_id"] = group_id
-    db.table("dwall_panels").upsert(
-        clean, on_conflict="group_id,panel_number"
-    ).execute()
+
+def upsert_dwall_panel(group_id: str, panel_data: dict[str, Any]):
+    import json
+
+    present = [c for c in _DWALL_COLUMNS if c in panel_data]
+    params: dict[str, Any] = {"group_id": group_id}
+    for c in present:
+        v = panel_data[c]
+        params[c] = json.dumps(v, default=str) if c in _JSONB_COLUMNS else v
+
+    cols = ["group_id"] + present
+    placeholders = [
+        f"CAST(:{c} AS JSONB)" if c in _JSONB_COLUMNS else f":{c}" for c in cols
+    ]
+    # Only overwrite the fields this message actually carried. A later entry
+    # that mentions casting times alone must not blank out the excavation
+    # times an earlier entry recorded for the same panel.
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in present)
+
+    sql = f"""
+        INSERT INTO dwall_panels ({", ".join(cols)})
+        VALUES ({", ".join(placeholders)})
+        ON CONFLICT ON CONSTRAINT dwall_panels_group_panel_unique
+        DO UPDATE SET {updates}
+    """ if present else """
+        INSERT INTO dwall_panels (group_id) VALUES (:group_id)
+        ON CONFLICT ON CONSTRAINT dwall_panels_group_panel_unique DO NOTHING
+    """
+
+    with get_engine().begin() as conn:
+        conn.execute(text(sql), params)
 
 
 def get_all_panels(group_id: str) -> list[dict]:
-    result = (
-        db.table("dwall_panels")
-        .select("*")
-        .eq("group_id", group_id)
-        .order("panel_number")
-        .execute()
-    )
-    return result.data
-
-
-def get_all_logs(group_id: str) -> list[dict]:
-    """Fetch every log for a group, oldest first.
-
-    Supabase caps a single select at 1000 rows by default, so page explicitly:
-    a full-history export runs well past that and would otherwise truncate
-    silently at exactly 1000 entries.
-    """
-    PAGE = 1000
-    rows: list[dict] = []
-    offset = 0
-    while True:
-        result = (
-            db.table("daily_logs")
-            .select("*")
-            .eq("group_id", group_id)
-            .order("log_date")
-            .order("logged_at")
-            .range(offset, offset + PAGE - 1)
-            .execute()
-        )
-        batch = result.data
-        rows.extend(batch)
-        if len(batch) < PAGE:
-            return rows
-        offset += PAGE
+    with get_engine().connect() as conn:
+        return _rows(conn.execute(
+            text("""
+                SELECT * FROM dwall_panels
+                WHERE group_id = :group_id ORDER BY panel_number
+            """),
+            {"group_id": group_id},
+        ))

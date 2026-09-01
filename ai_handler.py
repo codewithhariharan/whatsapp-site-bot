@@ -1,15 +1,27 @@
 import json
-import anthropic
+from anthropic import AnthropicVertex
 from config import settings
 import database as db
 
-client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+client = AnthropicVertex(
+    project_id=settings.VERTEX_PROJECT_ID,
+    region=settings.VERTEX_REGION,
+)
+
+# /ask stuffs the whole history into one prompt. That was fine at a few hundred
+# rows and is not fine at ~38k: Vertex rejects request payloads over 30 MB, and
+# well before that the cost and latency per question become absurd. Cap it at
+# the most recent slice until this is replaced with a real retrieval step.
+MAX_LOGS_IN_PROMPT = 1500
 
 
 def answer_query(group_id: str, question: str) -> str:
     """Search the database and answer a natural language question."""
 
     all_logs = db.get_all_logs(group_id)
+    truncated = len(all_logs) > MAX_LOGS_IN_PROMPT
+    if truncated:
+        all_logs = all_logs[-MAX_LOGS_IN_PROMPT:]
     all_panels = db.get_all_panels(group_id)
 
     context = f"""You are a construction site assistant. Answer the question using only the data below.
@@ -24,9 +36,14 @@ D-WALL / BARRETTE PANEL RECORDS:
 Question: {question}"""
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=settings.ANSWER_MODEL,
         max_tokens=500,
         messages=[{"role": "user", "content": context}],
     )
 
-    return response.content[0].text.strip()
+    answer = response.content[0].text.strip()
+    if truncated:
+        answer += (
+            f"\n\n_(Answered from the most recent {MAX_LOGS_IN_PROMPT} entries only.)_"
+        )
+    return answer

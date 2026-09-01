@@ -15,9 +15,9 @@ A WhatsApp bot that turns a construction site's group chat into a structured rep
 | Layer | Technology |
 |---|---|
 | Backend | Python, FastAPI (async), Uvicorn |
-| AI | Anthropic Claude (`claude-sonnet-4-6`) |
+| AI | Claude via Vertex AI |
 | Messaging | Meta WhatsApp Cloud API + webhooks; Baileys (Node) bridge for groups |
-| Data | Supabase (PostgreSQL) |
+| Data | Cloud SQL for PostgreSQL 16 (IAM auth) |
 | Reporting | openpyxl (Excel generation) |
 | Deployment | GCE VM + Docker Compose + Caddy (see `deploy/gcp/`) |
 
@@ -33,7 +33,7 @@ WhatsApp ──► Meta Cloud API ──► /webhook (FastAPI)
    └──── whatsapp_client ◄──── message_parser ──► Claude  (parse free-text)
                                       │
                                       ▼
-                               Supabase (Postgres)
+                          Cloud SQL for PostgreSQL
 
 Groups:  WhatsApp group ──► Baileys bridge (Node) ──► /webhook
 ```
@@ -53,20 +53,27 @@ Incoming webhooks are signature-verified against the Meta App Secret (HMAC-SHA25
 
 1. A **Meta Business Account** — business.facebook.com
 2. A **dedicated phone number** (SIM not currently on WhatsApp)
-3. A **Railway account** (free) — railway.app
-4. A **Supabase account** (free) — supabase.com
-5. An **Anthropic API key** — console.anthropic.com
+3. A **Google Cloud project** with billing enabled
+4. The **gcloud CLI**, authenticated (`gcloud auth login`)
+5. Access to the Claude models in the **Vertex AI Model Garden**
 
 ---
 
-## Step 1 — Supabase (Database)
+## Step 1 — Cloud SQL (Database)
 
-1. Go to supabase.com → New Project
-2. Once created, go to **SQL Editor**
-3. Paste the entire contents of `schema.sql` and run it
-4. Go to **Project Settings → API**
-   - Copy the **Project URL** → this is `SUPABASE_URL`
-   - Copy the **service_role key** (not anon key) → this is `SUPABASE_KEY`
+`deploy/gcp/provision.sh` creates the instance, database, and IAM user. Then
+load the schema and grant the runtime account rights on it:
+
+```bash
+gcloud sql connect site-bot-db --user=postgres --database=sitebot < schema.sql
+# then, still as postgres:
+#   GRANT USAGE ON SCHEMA public TO "site-bot-sa@PROJECT.iam";
+#   GRANT ALL ON ALL TABLES IN SCHEMA public TO "site-bot-sa@PROJECT.iam";
+```
+
+There is no database password: the Cloud SQL Python Connector authenticates
+with the VM's service account. See `deploy/gcp/README.md` for the two things
+that commonly fail on first connect.
 
 ---
 
@@ -87,31 +94,27 @@ Incoming webhooks are signature-verified against the Meta App Secret (HMAC-SHA25
 
 ---
 
-## Step 3 — Deploy to Railway
+## Step 3 — Deploy to GCP
 
-1. Push this folder to a GitHub repo
-2. Go to railway.app → New Project → Deploy from GitHub
-3. Select your repo
-4. Go to **Variables** and add all values from `.env.example`:
-   ```
-   WHATSAPP_TOKEN=...
-   WHATSAPP_PHONE_NUMBER_ID=...
-   WHATSAPP_BUSINESS_ACCOUNT_ID=...
-   WEBHOOK_VERIFY_TOKEN=mysitebot2026
-   APP_SECRET=...
-   SUPABASE_URL=...
-   SUPABASE_KEY=...
-   ANTHROPIC_API_KEY=...
-   ```
-5. Go to **Settings → Networking → Generate Domain**
-   - Your webhook URL will be: `https://your-app.railway.app/webhook`
+See **`deploy/gcp/README.md`** for the full walkthrough. In short:
+
+```bash
+export PROJECT=your-project-id
+./deploy/gcp/provision.sh          # APIs, service account, Cloud SQL, VM, firewall
+gcloud builds submit --config deploy/gcp/cloudbuild.yaml
+```
+
+Then create `.env` and `bridge.env` on the VM from their examples and run
+`docker compose -f deploy/gcp/docker-compose.prod.yml up -d`. Your webhook URL
+is `https://<your-domain>/webhook`, served by Caddy with an automatic
+Let's Encrypt certificate.
 
 ---
 
 ## Step 4 — Connect Webhook to Meta
 
 1. Back in Meta Developer portal → WhatsApp → Configuration
-2. Set **Callback URL**: `https://your-app.railway.app/webhook`
+2. Set **Callback URL**: `https://<your-domain>/webhook`
 3. Set **Verify Token**: the same string you used for `WEBHOOK_VERIFY_TOKEN`
 4. Click **Verify and Save**
 5. Under **Webhook fields**, subscribe to **messages**

@@ -28,10 +28,39 @@ expect.
 
 A VM gives a real disk, one process, and a stable IP for the webhook.
 
+## Data and AI
+
+| Concern  | Service                        | Auth                                    |
+|----------|--------------------------------|-----------------------------------------|
+| Database | Cloud SQL for PostgreSQL 16    | IAM database auth via the VM's SA       |
+| Claude   | Vertex AI (`AnthropicVertex`)  | Application Default Credentials         |
+
+Neither stores a secret on the VM. The Cloud SQL Python Connector authorises
+with the service account and handles TLS, so there is no database password and
+no certificate to rotate; Vertex resolves credentials from ADC, so there is no
+`ANTHROPIC_API_KEY`.
+
+Two things that bite on first connect:
+
+- The IAM database username is the service-account email with
+  `.gserviceaccount.com` **stripped** — `site-bot-sa@PROJECT.iam`. Passing the
+  full email fails with a "role does not exist" error that does not hint at
+  the truncation.
+- Creating the IAM user does not grant it anything. Connect once as `postgres`
+  and `GRANT USAGE ON SCHEMA public` plus table privileges, or every query
+  returns a permission error.
+
+Model IDs on Vertex differ from the direct API: current models are unsuffixed
+(`claude-sonnet-4-6`), older ones keep a version suffix with an `@`
+(`claude-haiku-4-5@20251001`). `VERTEX_REGION` defaults to `global` because
+per-region model availability varies and `asia-southeast1` does not serve every
+model — check the Model Garden before pinning a specific region.
+
 ## Cost
 
 `e2-small` + 10 GB pd-balanced + static IP in `asia-southeast1` lands around
-SGD 25/month. `e2-micro` is free-tier eligible but 1 GB is tight for Node +
+SGD 25/month, plus roughly SGD 35/month for a `db-g1-small` Cloud SQL instance
+with automated backups. Vertex AI is per-token on top. `e2-micro` is free-tier eligible but 1 GB is tight for Node +
 Chromium-free Baileys + Python; memory pressure surfaces as an unexplained
 reconnect loop rather than a clean OOM, so it is a bad place to save money.
 
@@ -56,6 +85,9 @@ On the VM, create `.env` (from `.env.example`) and `bridge.env` (from
 |--------------|----------------------|----------------------------------------|
 | `.env`       | `BAILEYS_BRIDGE_URL` | `http://bridge:8088`                   |
 | `.env`       | `ALLOWED_GROUP_IDS`  | the CR106 group JID                    |
+| `.env`       | `INSTANCE_CONNECTION_NAME` | `PROJECT:asia-southeast1:site-bot-db` |
+| `.env`       | `DB_USER`            | `site-bot-sa@PROJECT.iam`              |
+| `.env`       | `VERTEX_PROJECT_ID`  | your project ID                        |
 | `bridge.env` | `PYTHON_INGEST_URL`  | `http://api:8000/baileys/incoming`     |
 | `bridge.env` | `ALLOWED_GROUP_IDS`  | the same JID                           |
 | both         | `BRIDGE_SHARED_SECRET` | the same random string               |
@@ -73,13 +105,16 @@ Finally, set the Meta webhook URL to `https://$BOT_DOMAIN/webhook`.
 
 ## Secrets
 
-`env_file` keeps secrets on the VM disk in plaintext. That is acceptable for a
-single-operator deployment but not for anything shared. To move them into
-Secret Manager, store each value as a secret and fetch them into the env files
-in a startup script — the VM already has the `cloud-platform` scope.
+The database and Vertex no longer need secrets — IAM covers both. What remains
+in `env_file` is `WHATSAPP_TOKEN`, `APP_SECRET`, `WEBHOOK_VERIFY_TOKEN` and
+`BRIDGE_SHARED_SECRET`, still plaintext on the VM disk. Acceptable for a
+single-operator deployment; for anything shared, store them in Secret Manager
+and fetch them in a startup script — the VM already has the `cloud-platform`
+scope and the SA can be granted `roles/secretmanager.secretAccessor`.
 
-Rotate `ANTHROPIC_API_KEY`, `SUPABASE_KEY` and `WHATSAPP_TOKEN` if they have
-ever been committed, pasted into a chat, or included in a zip.
+Rotate `WHATSAPP_TOKEN` and `APP_SECRET` if they have ever been committed,
+pasted into a chat, or included in a zip. The old Supabase service-role key
+should be revoked in Supabase even though nothing references it any more.
 
 ## Getting the group JID
 

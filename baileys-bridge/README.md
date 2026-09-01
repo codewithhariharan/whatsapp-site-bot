@@ -64,14 +64,12 @@ still go through the Cloud API. The 1:1 bot is unaffected.
 | `POST` | `/send` | `{ to, text }` | requires `X-Bridge-Secret` |
 | `POST` | `/send-document` | `{ to, file_base64, filename, mimetype, caption }` | requires `X-Bridge-Secret` |
 
-## Deploying on Railway
+## Deploying
 
-Run this as a **second Railway service** pointing at the `baileys-bridge`
-directory.
+The bridge runs as the `bridge` service in `deploy/gcp/docker-compose.prod.yml`
+on the same VM as the API. It is deliberately not published to the host: only
+the API needs to reach it, over the compose network at `http://bridge:8088`.
 
-- Start command: `npm start` (or set root directory to `baileys-bridge`).
-- **Mount a volume** at `AUTH_DIR` so the session survives redeploys — otherwise
-  you must re-scan the QR on every deploy. You'll need to view the deploy logs
-  once to scan the first QR.
-- Set `PYTHON_INGEST_URL` to the Python service's public URL +
-  `/baileys/incoming`, and use the same `BRIDGE_SHARED_SECRET` on both.
+`auth_info/` is mounted from `/mnt/disks/botdata/auth_info` on a separate
+persistent disk, so rebuilding the VM does not force a re-pair.
+
