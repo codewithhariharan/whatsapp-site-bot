@@ -1,12 +1,7 @@
 import json
-from anthropic import AnthropicVertex
+from ai_client import get_client, model_id
 from config import settings
 import database as db
-
-client = AnthropicVertex(
-    project_id=settings.VERTEX_PROJECT_ID,
-    region=settings.VERTEX_REGION,
-)
 
 # /ask stuffs the whole history into one prompt. That was fine at a few hundred
 # rows and is not fine at ~38k: Vertex rejects request payloads over 30 MB, and
@@ -35,8 +30,8 @@ D-WALL / BARRETTE PANEL RECORDS:
 
 Question: {question}"""
 
-    response = client.messages.create(
-        model=settings.ANSWER_MODEL,
+    response = get_client().messages.create(
+        model=model_id(settings.ANSWER_MODEL),
         max_tokens=500,
         messages=[{"role": "user", "content": context}],
     )

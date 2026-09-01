@@ -19,10 +19,16 @@ class Settings(BaseSettings):
     DB_IAM_AUTH: bool = True               # IAM database authentication
     DB_PRIVATE_IP: bool = False            # true if the VM reaches Cloud SQL over VPC
 
-    # ── Claude via Vertex AI ──────────────────────────────────────────────────
-    # Credentials come from Application Default Credentials (the VM's service
-    # account), so there is no API key to store or rotate.
-    VERTEX_PROJECT_ID: str
+    # ── Claude ────────────────────────────────────────────────────────────────
+    # Two backends, picked by which of these is set (see ai_client.py).
+    #
+    # Vertex is preferred: credentials come from Application Default Credentials
+    # (the VM's service account), so there is no API key to store or rotate. It
+    # needs the project to hold a Vertex AI Model Garden grant for Anthropic
+    # models. Leave VERTEX_PROJECT_ID empty and set ANTHROPIC_API_KEY to run
+    # against the direct API instead.
+    VERTEX_PROJECT_ID: str = ""
+    ANTHROPIC_API_KEY: str = ""
     # "global" avoids per-region model availability gaps. asia-southeast1 does
     # not serve every Claude model; check the Model Garden before pinning it.
     VERTEX_REGION: str = "global"

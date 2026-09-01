@@ -1,13 +1,6 @@
 import json
-from anthropic import AnthropicVertex
+from ai_client import get_client, model_id
 from config import settings
-
-# Credentials come from Application Default Credentials — on GCE that is the
-# VM's service account, so there is no API key on disk to leak or rotate.
-client = AnthropicVertex(
-    project_id=settings.VERTEX_PROJECT_ID,
-    region=settings.VERTEX_REGION,
-)
 
 
 def classify_and_parse(message: str) -> dict:
@@ -67,8 +60,8 @@ For a query:
 For ignore:
 {{"type": "ignore"}}"""
 
-    response = client.messages.create(
-        model=settings.PARSER_MODEL,
+    response = get_client().messages.create(
+        model=model_id(settings.PARSER_MODEL),
         max_tokens=1000,
         messages=[{"role": "user", "content": prompt}],
     )

@@ -35,10 +35,29 @@ A VM gives a real disk, one process, and a stable IP for the webhook.
 | Database | Cloud SQL for PostgreSQL 16    | IAM database auth via the VM's SA       |
 | Claude   | Vertex AI (`AnthropicVertex`)  | Application Default Credentials         |
 
-Neither stores a secret on the VM. The Cloud SQL Python Connector authorises
-with the service account and handles TLS, so there is no database password and
-no certificate to rotate; Vertex resolves credentials from ADC, so there is no
-`ANTHROPIC_API_KEY`.
+Neither is meant to store a secret on the VM. The Cloud SQL Python Connector
+authorises with the service account and handles TLS, so there is no database
+password and no certificate to rotate; Vertex resolves credentials from ADC, so
+there is no `ANTHROPIC_API_KEY`.
+
+**Vertex requires a Model Garden grant, and that is a separate approval.** On an
+org-managed project you will not have it by default, and without it every call
+returns 404 — including Google's own Gemini models, so a 404 here says nothing
+about your model ids being wrong. Check before assuming the deploy is broken:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  "https://aiplatform.googleapis.com/v1/projects/$PROJECT/locations/global/publishers/anthropic/models/claude-sonnet-4-6:rawPredict" \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"anthropic_version":"vertex-2023-10-16","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+Until the grant lands, leave `VERTEX_PROJECT_ID` empty and set
+`ANTHROPIC_API_KEY` — `ai_client.py` picks the backend from whichever is set and
+rewrites the model ids to match (dated snapshots are `claude-haiku-4-5@20251001`
+on Vertex and `claude-haiku-4-5` on the direct API). Switching back later is an
+env change and a restart.
 
 Two things that bite on first connect:
 

@@ -17,12 +17,17 @@ def _stub_response(text: str):
 
 @pytest.fixture
 def fake_claude(monkeypatch):
-    """Make message_parser.client.messages.create return a canned string."""
+    """Stub the Claude call with a canned string.
+
+    Replaces get_client() rather than a module-level client: the real client is
+    built lazily on first use, so there is no object to patch at import time and
+    no credentials are needed here.
+    """
     def _install(reply_text: str):
-        monkeypatch.setattr(
-            mp.client.messages, "create",
-            lambda *a, **k: _stub_response(reply_text),
+        stub = SimpleNamespace(
+            messages=SimpleNamespace(create=lambda *a, **k: _stub_response(reply_text))
         )
+        monkeypatch.setattr(mp, "get_client", lambda: stub)
     return _install
 
 
