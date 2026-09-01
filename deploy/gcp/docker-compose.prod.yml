@@ -1,0 +1,45 @@
+# Production stack for a single GCE VM.
+#
+#   caddy   — TLS termination, forwards /webhook to the API (Meta needs HTTPS)
+#   api     — FastAPI: webhook, business logic, Excel, Claude parsing
+#   bridge  — Baileys WhatsApp Web transport for group messages
+#
+# The bridge is deliberately NOT published to the host: only `api` needs to
+# reach it, and exposing a service that can send WhatsApp messages on your
+# behalf to the public internet is a bad trade for zero benefit.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+  api:
+    image: ${REGISTRY}/site-bot-api:${TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    expose:
+      - "8000"
+
+  bridge:
+    image: ${REGISTRY}/site-bot-bridge:${TAG:-latest}
+    restart: unless-stopped
+    env_file: bridge.env
+    expose:
+      - "8088"
+    volumes:
+      # Linked-device session. On a persistent disk so a VM restart or image
+      # roll does not force a re-scan of the pairing QR.
+      - /mnt/disks/botdata/auth_info:/app/auth_info
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,38 @@
+# Builds both images and pushes them to Artifact Registry.
+#   gcloud builds submit --config deploy/gcp/cloudbuild.yaml \
+#     --substitutions=_REGION=asia-southeast1,_REPO=site-bot
+substitutions:
+  _REGION: asia-southeast1
+  _REPO: site-bot
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/site-bot-api:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/site-bot-api:latest
+      - -f
+      - Dockerfile
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/site-bot-bridge:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/site-bot-bridge:latest
+      - -f
+      - baileys-bridge/Dockerfile
+      - baileys-bridge
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/site-bot-api:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/site-bot-api:latest
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/site-bot-bridge:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/site-bot-bridge:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY

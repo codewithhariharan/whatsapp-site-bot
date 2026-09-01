@@ -19,7 +19,7 @@ A WhatsApp bot that turns a construction site's group chat into a structured rep
 | Messaging | Meta WhatsApp Cloud API + webhooks; Baileys (Node) bridge for groups |
 | Data | Supabase (PostgreSQL) |
 | Reporting | openpyxl (Excel generation) |
-| Deployment | Railway (auto-deploy from GitHub) |
+| Deployment | GCE VM + Docker Compose + Caddy (see `deploy/gcp/`) |
 
 ## Architecture
 

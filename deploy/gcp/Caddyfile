@@ -1,0 +1,20 @@
+# Replace with the DNS name pointing at the VM's static IP.
+# Caddy provisions and renews the Let's Encrypt certificate automatically.
+{$BOT_DOMAIN} {
+	encode gzip
+
+	# Meta's webhook and the health check are the only public surface.
+	handle /webhook* {
+		reverse_proxy api:8000
+	}
+
+	handle /health {
+		reverse_proxy api:8000
+	}
+
+	# /baileys/incoming is service-to-service only. The bridge reaches the API
+	# directly over the compose network, so it never needs to traverse Caddy.
+	handle {
+		respond "not found" 404
+	}
+}
