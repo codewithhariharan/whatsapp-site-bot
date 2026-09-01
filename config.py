@@ -6,8 +6,7 @@ class Settings(BaseSettings):
     WHATSAPP_BUSINESS_ACCOUNT_ID: str
     WEBHOOK_VERIFY_TOKEN: str
     APP_SECRET: str
-    SUPABASE_URL: str
-    SUPABASE_KEY: str
+    DATABASE_URL: str
     ANTHROPIC_API_KEY: str
 
     # Baileys bridge (unofficial WhatsApp Web service for group messaging).

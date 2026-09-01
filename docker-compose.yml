@@ -16,14 +16,14 @@ services:
     build: .
     env_file: .env
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     restart: unless-stopped
 
   bridge:
     build: ./baileys-bridge
     env_file: baileys-bridge/.env
     ports:
-      - "8088:8088"
+      - "127.0.0.1:8088:8088"
     depends_on:
       - api
     volumes:
