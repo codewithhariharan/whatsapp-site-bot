@@ -20,9 +20,9 @@ async def handle_help(group_id: str):
         "*/confirm*\n"
         "Send the final daily report after reviewing.\n\n"
         "*/excel*\n"
-        "Export this month's logs as an Excel file.\n\n"
+        "Export the complete record, 2022 to today, as one sheet.\n\n"
         "*/excel* _Jan 2026_\n"
-        "Export a specific month's logs.\n\n"
+        "Export a single month, laid out by location and date.\n\n"
         "*/dwall*\n"
         "Export all D-Wall / Barrette panel records as Excel.\n\n"
         "*/ask* _your question_\n"
@@ -208,16 +208,25 @@ async def handle_excel(group_id: str, args: str = ""):
     from datetime import datetime
     import calendar
 
+    # No month given → export the whole record. The monthly layout pivots
+    # locations against dates, which does not survive the full range: the
+    # history holds ~6,100 distinct main_locations over ~1,500 days, so a
+    # full-range pivot would be 214 weekly sheets thousands of rows deep.
+    # Fall back to the flat chronological sheet for that case; a named month
+    # still gets the pivot, where the location axis is a few hundred at most.
+    if not args.strip():
+        await _export_full_record(group_id)
+        return
+
     today = date.today()
     year, month = today.year, today.month
 
-    if args.strip():
-        try:
-            parsed = datetime.strptime(args.strip(), "%b %Y")
-            year, month = parsed.year, parsed.month
-        except ValueError:
-            await send_message(group_id, "⚠️ Format: /excel or /excel Jan 2026")
-            return
+    try:
+        parsed = datetime.strptime(args.strip(), "%b %Y")
+        year, month = parsed.year, parsed.month
+    except ValueError:
+        await send_message(group_id, "⚠️ Format: /excel or /excel Jan 2026")
+        return
 
     logs = db.get_logs_for_month(group_id, year, month)
     locations = db.get_location_order(group_id)
@@ -235,6 +244,41 @@ async def handle_excel(group_id: str, args: str = ""):
         file_bytes,
         filename,
         caption=f"📊 {month_name} {year} — {len(logs)} log entries across {len(locations)} locations.",
+    )
+
+
+def _as_date(entry):
+    raw = entry.get("log_date")
+    return date.fromisoformat(raw) if isinstance(raw, str) else raw
+
+
+async def _export_full_record(group_id: str):
+    """Export every log on record as one flat, chronological sheet.
+
+    This is what a bare /excel does. It was /excel2 until that became an exact
+    duplicate of the no-argument form and was removed.
+    """
+    logs = db.get_all_logs(group_id)
+
+    if not logs:
+        await send_message(group_id, "⚠️ No logs found on record.")
+        return
+
+    first = _as_date(logs[0])
+    last = _as_date(logs[-1])
+
+    file_bytes = xls.generate_full_excel(logs)
+    span = f"{first.strftime('%d%b%Y')}-{last.strftime('%d%b%Y')}"
+    filename = f"Site_Report_Full_{span}.xlsx"
+
+    await send_document(
+        group_id,
+        file_bytes,
+        filename,
+        caption=(
+            f"📊 Full record — {len(logs)} entries, "
+            f"{first.strftime('%d %b %Y')} to {last.strftime('%d %b %Y')}."
+        ),
     )
 
 

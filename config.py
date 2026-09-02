@@ -1,21 +1,22 @@
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    WHATSAPP_TOKEN: str
-    WHATSAPP_PHONE_NUMBER_ID: str
-    WHATSAPP_BUSINESS_ACCOUNT_ID: str
-    WEBHOOK_VERIFY_TOKEN: str
-    APP_SECRET: str
-    SUPABASE_URL: str
-    SUPABASE_KEY: str
+    DATABASE_URL: str
     ANTHROPIC_API_KEY: str
 
-    # Baileys bridge (unofficial WhatsApp Web service for group messaging).
-    # Leave blank to run Cloud-API-only with no group support.
-    BAILEYS_BRIDGE_URL: str = ""      # e.g. https://your-bridge.up.railway.app
-    BRIDGE_SHARED_SECRET: str = ""    # must match the bridge's BRIDGE_SHARED_SECRET
+    # Baileys bridge (WhatsApp Web transport). This is the only transport —
+    # the bot serves groups, and the Cloud API cannot do groups — so both of
+    # these are required. Without them there is no way to receive a message or
+    # send a reply, and failing at startup beats discovering it at runtime.
+    BAILEYS_BRIDGE_URL: str           # e.g. http://bridge:8088
+    BRIDGE_SHARED_SECRET: str         # must match the bridge's BRIDGE_SHARED_SECRET
 
     class Config:
         env_file = ".env"
+        # The .env still carries the retired Cloud API keys (WHATSAPP_TOKEN,
+        # APP_SECRET, WEBHOOK_VERIFY_TOKEN and friends). pydantic-settings
+        # treats unknown dotenv keys as an error by default, so ignore them
+        # rather than requiring the file to be rewritten in lockstep.
+        extra = "ignore"
 
 settings = Settings()

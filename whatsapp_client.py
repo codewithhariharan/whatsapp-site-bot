@@ -1,3 +1,10 @@
+"""Outbound WhatsApp messaging, via the Baileys bridge.
+
+Every recipient is a group JID. The Meta Cloud API path that used to handle
+1:1 chats has been removed — the bot is only used in groups, and the Cloud API
+cannot send to one, so the two-transport split earned nothing and kept a live
+access token in the process.
+"""
 import os
 import base64
 import logging
@@ -7,29 +14,17 @@ from config import settings
 
 logger = logging.getLogger("site_bot")
 
-BASE_URL = f"https://graph.facebook.com/v19.0/{settings.WHATSAPP_PHONE_NUMBER_ID}"
-HEADERS = {"Authorization": f"Bearer {settings.WHATSAPP_TOKEN}"}
 
-
-def _is_group(to: str) -> bool:
-    """Group JIDs end with @g.us; 1:1 recipients are bare phone numbers.
-    Group traffic goes through the Baileys bridge, 1:1 through the Cloud API.
-    """
-    return to.endswith("@g.us")
-
-
-async def _bridge_post(path: str, payload: dict):
-    """Send a reply into a WhatsApp group via the Baileys bridge service."""
-    if not settings.BAILEYS_BRIDGE_URL:
-        logger.error("Group reply requested but BAILEYS_BRIDGE_URL is not configured")
-        return
-    async with httpx.AsyncClient(timeout=30) as client:
+async def _bridge_post(path: str, payload: dict, timeout: float = 30):
+    """Send a request to the Baileys bridge."""
+    async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
             f"{settings.BAILEYS_BRIDGE_URL.rstrip('/')}{path}",
             headers={"X-Bridge-Secret": settings.BRIDGE_SHARED_SECRET},
             json=payload,
         )
     _check(response, f"bridge {path}")
+
 
 # WhatsApp validates the upload's MIME type against a fixed allow-list and
 # rejects application/octet-stream. mimetypes.guess_type() is platform-
@@ -53,7 +48,7 @@ def _mime_for(filename: str) -> str:
 
 
 def _check(response: httpx.Response, action: str):
-    """Log and raise if the WhatsApp API returned an error."""
+    """Log and raise if the bridge returned an error."""
     if response.status_code >= 400:
         logger.error("WhatsApp %s failed: HTTP %s — %s",
                      action, response.status_code, response.text)
@@ -61,71 +56,21 @@ def _check(response: httpx.Response, action: str):
 
 
 async def send_message(to: str, text: str):
-    """Send a plain text message.
-
-    Group recipients (JID ending in @g.us) are routed through the Baileys
-    bridge; individual recipients (bare phone number) use the Cloud API.
-    """
-    if _is_group(to):
-        await _bridge_post("/send", {"to": to, "text": text})
-        return
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{BASE_URL}/messages",
-            headers=HEADERS,
-            json={
-                "messaging_product": "whatsapp",
-                "to": to,
-                "type": "text",
-                "text": {"body": text},
-            },
-        )
-    _check(response, "send_message")
-
-
-async def upload_media(file_bytes: bytes, filename: str) -> str:
-    """Upload a file to WhatsApp media API and return media_id."""
-    mime_type = _mime_for(filename)
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{BASE_URL}/media",
-            headers={"Authorization": f"Bearer {settings.WHATSAPP_TOKEN}"},
-            files={"file": (filename, file_bytes, mime_type)},
-            data={"messaging_product": "whatsapp"},
-        )
-    _check(response, "upload_media")
-    return response.json()["id"]
+    """Send a plain text message into a group."""
+    await _bridge_post("/send", {"to": to, "text": text})
 
 
 async def send_document(to: str, file_bytes: bytes, filename: str, caption: str = ""):
-    """Send a file as a document message.
-
-    Groups go through the bridge (file sent base64-encoded); individuals use
-    the Cloud API upload-then-send flow.
-    """
-    if _is_group(to):
-        await _bridge_post("/send-document", {
-            "to": to,
-            "file_base64": base64.b64encode(file_bytes).decode(),
-            "filename": filename,
-            "mimetype": _mime_for(filename),
-            "caption": caption,
-        })
-        return
-    media_id = await upload_media(file_bytes, filename)
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{BASE_URL}/messages",
-            headers=HEADERS,
-            json={
-                "messaging_product": "whatsapp",
-                "to": to,
-                "type": "document",
-                "document": {
-                    "id": media_id,
-                    "filename": filename,
-                    "caption": caption,
-                },
-            },
-        )
-    _check(response, "send_document")
+    """Send a file as a document message, base64-encoded to the bridge."""
+    # The bridge uploads the file to WhatsApp before it answers, so this
+    # timeout has to cover the upload, not just the local POST. The full
+    # /excel export is ~1.7 MB (~2.3 MB base64) and 30s is not enough
+    # headroom for it on a slow link — a timeout here loses the document
+    # silently, since the send already succeeded on WhatsApp's side.
+    await _bridge_post("/send-document", timeout=180, payload={
+        "to": to,
+        "file_base64": base64.b64encode(file_bytes).decode(),
+        "filename": filename,
+        "mimetype": _mime_for(filename),
+        "caption": caption,
+    })

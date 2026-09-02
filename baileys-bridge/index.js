@@ -32,6 +32,48 @@ if (!SHARED_SECRET) throw new Error('BRIDGE_SHARED_SECRET is required')
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' })
 
+// ── Group allowlist ───────────────────────────────────────────────────────────
+// Without this the bridge forwards EVERY group the linked account belongs to.
+// Prefer ALLOWED_GROUP_IDS (JIDs are stable). ALLOWED_GROUP_NAMES matches the
+// group subject instead, which is convenient but breaks if anyone renames the
+// group — and two groups can share a name.
+const ALLOWED_GROUP_IDS = new Set(
+  (process.env.ALLOWED_GROUP_IDS || '')
+    .split(',').map((s) => s.trim()).filter(Boolean),
+)
+const ALLOWED_GROUP_NAMES = new Set(
+  (process.env.ALLOWED_GROUP_NAMES || '')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+)
+if (!ALLOWED_GROUP_IDS.size && !ALLOWED_GROUP_NAMES.size) {
+  throw new Error(
+    'Set ALLOWED_GROUP_IDS or ALLOWED_GROUP_NAMES — refusing to start unfiltered.',
+  )
+}
+
+// Cache jid -> subject so we do not call groupMetadata on every message
+// (WhatsApp rate-limits it, and a throttled lookup would drop real logs).
+const groupSubjects = new Map()
+
+async function subjectFor(jid) {
+  if (groupSubjects.has(jid)) return groupSubjects.get(jid)
+  try {
+    const meta = await sock.groupMetadata(jid)
+    groupSubjects.set(jid, meta.subject || '')
+    return meta.subject || ''
+  } catch (err) {
+    logger.warn({ err, jid }, 'groupMetadata lookup failed')
+    return ''
+  }
+}
+
+async function isAllowedGroup(jid) {
+  if (ALLOWED_GROUP_IDS.has(jid)) return true
+  if (!ALLOWED_GROUP_NAMES.size) return false
+  const subject = await subjectFor(jid)
+  return ALLOWED_GROUP_NAMES.has(subject.trim().toLowerCase())
+}
+
 const RECONNECT_DELAY_MS = 5000 // wait before reconnecting to avoid 405 rate-limiting
 
 // If set, link via an 8-char pairing code instead of a QR scan. Digits only,
@@ -151,6 +193,17 @@ async function startSock() {
       connected = true
       linkState = 'open'
       logger.info('WhatsApp connection open')
+      // Print every group this account is in, so the real JID for the group you
+      // want can be copied straight into ALLOWED_GROUP_IDS.
+      try {
+        const all = await sock.groupFetchAllParticipating()
+        for (const [jid, meta] of Object.entries(all)) {
+          groupSubjects.set(jid, meta.subject || '')
+          logger.info({ jid, subject: meta.subject }, 'group')
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Could not enumerate groups')
+      }
     }
 
     if (connection === 'close') {
@@ -164,9 +217,9 @@ async function startSock() {
         // weight: Baileys will keep replaying them and never surface a pairing
         // code, so clear them and exit non-zero. Exiting is what makes the
         // failure visible — the process used to stay alive with a dead socket,
-        // which kept the HTTP healthcheck green and stopped Railway's
-        // restartPolicy from ever firing. On restart we boot with an empty
-        // AUTH_DIR and print a fresh pairing code.
+        // which kept the HTTP healthcheck green so nothing ever restarted it.
+        // Compose's `restart: unless-stopped` brings us back with an empty
+        // AUTH_DIR, and Baileys then prints a fresh pairing code.
         logger.error(
           `Logged out — clearing ${AUTH_DIR} and exiting so the supervisor ` +
             'restarts us with a fresh pairing code.',
@@ -207,6 +260,10 @@ async function startSock() {
       // NOT in that set, so we let it through and it gets logged like any other.
       if (m.key.fromMe && sentMessageIds.has(m.key.id)) continue
       if (!isGroup) continue // groups only — 1:1 stays on Cloud API
+      if (!(await isAllowedGroup(jid))) {
+        logger.debug({ jid }, 'group not in allowlist — dropped')
+        continue
+      }
 
       const text = previewText
       if (!text) continue
