@@ -1,16 +1,9 @@
-"""Routing and MIME-type helpers in the WhatsApp transport layer."""
+"""MIME-type helpers in the WhatsApp transport layer.
+
+The group/1:1 routing tests that used to live here went with `_is_group()`:
+every recipient is a group now, so there is nothing left to route between.
+"""
 import whatsapp_client as wc
-
-
-class TestIsGroup:
-    def test_group_jid_is_group(self):
-        assert wc._is_group("120363041234567890@g.us") is True
-
-    def test_bare_phone_number_is_not_group(self):
-        assert wc._is_group("6588257614") is False
-
-    def test_individual_jid_is_not_group(self):
-        assert wc._is_group("6588257614@s.whatsapp.net") is False
 
 
 class TestMimeFor:
@@ -32,3 +25,17 @@ class TestMimeFor:
 
     def test_unknown_extension_falls_back_to_octet_stream(self):
         assert wc._mime_for("mystery.zzz") == "application/octet-stream"
+
+
+class TestSendDocumentTimeout:
+    def test_document_send_gets_a_longer_timeout_than_text(self):
+        """The bridge uploads to WhatsApp before replying, so the document
+        timeout has to cover that upload. The full /excel export is ~1.7 MB and
+        was silently lost under the 30s default."""
+        import inspect
+
+        default = inspect.signature(wc._bridge_post).parameters["timeout"].default
+        assert default == 30
+
+        src = inspect.getsource(wc.send_document)
+        assert "timeout=180" in src

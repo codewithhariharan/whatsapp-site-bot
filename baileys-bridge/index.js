@@ -2,9 +2,9 @@
  * Baileys transport bridge for the WhatsApp site bot.
  *
  * Baileys drives a regular WhatsApp Web session (unofficial — violates Meta's
- * ToS, so run it on a SEPARATE phone number from the Cloud API bot). This
- * service does NOT contain any business logic: it is a pure transport adapter
- * that mirrors what Meta's webhook does for the 1:1 bot.
+ * ToS, so don't use a number you care about). This service does NOT contain any
+ * business logic: it is a pure transport adapter, and the bot's only link to
+ * WhatsApp — Meta's Cloud API cannot serve groups.
  *
  *   group message  ──> this bridge ──POST /baileys/incoming──> Python bot
  *   Python bot ──POST /send|/send-document──> this bridge ──> group
@@ -24,7 +24,7 @@ import { rmSync } from 'node:fs'
 
 const PORT = parseInt(process.env.PORT || '8088', 10)
 const AUTH_DIR = process.env.AUTH_DIR || './auth_info'
-const PYTHON_INGEST_URL = process.env.PYTHON_INGEST_URL // e.g. https://your-bot.up.railway.app/baileys/incoming
+const PYTHON_INGEST_URL = process.env.PYTHON_INGEST_URL // e.g. http://api:8000/baileys/incoming
 const SHARED_SECRET = process.env.BRIDGE_SHARED_SECRET
 
 if (!PYTHON_INGEST_URL) throw new Error('PYTHON_INGEST_URL is required')

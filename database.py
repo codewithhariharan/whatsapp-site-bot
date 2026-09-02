@@ -1,11 +1,10 @@
-"""Postgres data layer.
-
-Replaces the Supabase client with direct psycopg access so the app can run
-against Cloud SQL. Every public function keeps the same name, signature and
-return shape as the Supabase version, so no other module needs to change.
+"""Postgres data layer — direct psycopg access to Cloud SQL.
 
 Connection comes from settings.DATABASE_URL, e.g.
     postgresql://botuser:PASSWORD@10.2.0.5:5432/whatsapp_bot
+
+The VM reaches the instance over private IP, so the database has no public
+address and this string never leaves the VPC.
 """
 
 from datetime import date, datetime
@@ -18,13 +17,13 @@ from config import settings
 
 
 def _coerce(value):
-    """Match what the Supabase client used to return.
+    """Return ids and dates as strings, not as UUID/date/datetime objects.
 
-    Supabase delivered rows as JSON, so ids arrived as strings and dates as
-    ISO strings. psycopg returns real UUID, date and datetime objects. The
-    rest of the app was written against the string forms — and passing UUIDs
-    into save_reorder_session() would raise "not JSON serializable" — so
-    convert here rather than changing seven other modules.
+    psycopg hands back real Python objects; the rest of the app is written
+    against the string forms, and passing a UUID into save_reorder_session()
+    raises "not JSON serializable". Converting at the boundary keeps that
+    contract in one place instead of spreading str() calls through seven
+    modules. Callers may rely on this — do not remove it lightly.
     """
     if isinstance(value, UUID):
         return str(value)

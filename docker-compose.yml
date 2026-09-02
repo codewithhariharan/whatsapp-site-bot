@@ -1,6 +1,10 @@
-# Runs the full two-service stack locally:
-#   api    — FastAPI webhook + business logic (1:1 via WhatsApp Cloud API)
-#   bridge — Baileys transport so the bot also works in WhatsApp groups
+# The full two-service stack. This is what runs in production too.
+#   api    — FastAPI ingest + business logic, Claude parsing, Excel export
+#   bridge — Baileys transport; the bot's only link to WhatsApp
+#
+# Neither port is published beyond 127.0.0.1. Nothing needs to reach this host
+# from outside: the bridge holds an outbound WebSocket to WhatsApp, and the API
+# is only ever called by the bridge over the compose network.
 #
 # Usage:
 #   1. Create .env (API) and baileys-bridge/.env (bridge) from their examples.
@@ -8,8 +12,10 @@
 #        in .env                  BAILEYS_BRIDGE_URL=http://bridge:8088
 #        in baileys-bridge/.env   PYTHON_INGEST_URL=http://api:8000/baileys/incoming
 #      and use the SAME BRIDGE_SHARED_SECRET in both.
-#   3. docker compose up --build
-#   4. Watch `docker compose logs -f bridge` once to scan the first QR code.
+#   3. Set ALLOWED_GROUP_IDS in baileys-bridge/.env — the bridge refuses to
+#      start unfiltered. The first boot logs every group's JID.
+#   4. docker compose up -d --build
+#   5. Watch `docker compose logs -f bridge` once to link the device.
 
 services:
   api:
@@ -27,8 +33,20 @@ services:
     depends_on:
       - api
     volumes:
-      # Persist the linked-device session so you only scan the QR once.
+      # Persist the linked-device session so you only link once. Losing this
+      # means re-pairing with the physical phone.
       - baileys_auth:/app/auth_info
+    # /health reports the WhatsApp socket, not just the HTTP server. This does
+    # not restart anything on its own — the bridge exits non-zero on logout and
+    # `restart: unless-stopped` handles that — but it surfaces a socket that
+    # died some other way as unhealthy. Uses node rather than curl/wget:
+    # neither is in node:20-slim.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8088/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
 volumes:

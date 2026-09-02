@@ -1,4 +1,4 @@
-# ── FastAPI site-bot API (1:1 WhatsApp Cloud API webhook + business logic) ─────
+# ── FastAPI site-bot API (bridge ingest + business logic) ─────────────────────
 FROM python:3.12-slim
 
 # Don't buffer stdout/stderr (logs appear immediately) and don't write .pyc.
@@ -15,5 +15,5 @@ COPY . .
 
 EXPOSE 8000
 
-# Railway/most PaaS inject $PORT; default to 8000 locally.
+# $PORT is honoured if the platform injects one; default to 8000 otherwise.
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

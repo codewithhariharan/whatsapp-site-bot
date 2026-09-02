@@ -1,4 +1,4 @@
--- Run this in your Supabase SQL editor
+-- Run against the Cloud SQL instance: gcloud sql connect <instance> --user=postgres --database=whatsapp_bot
 
 CREATE TABLE groups (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, vm-live]
   pull_request:
 
 jobs:

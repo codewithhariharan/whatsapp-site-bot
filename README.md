@@ -4,126 +4,88 @@ A WhatsApp bot that turns a construction site's group chat into a structured rep
 
 ## Highlights
 
-- **Natural-language logging** — engineers write updates however they like; Claude (`claude-sonnet-4-6`) extracts location, description, and manpower into structured records.
+- **Natural-language logging** — engineers write updates however they like; Claude extracts location, description and manpower into structured records. A message naming one location, or none, is still logged.
 - **Conversational queries** — `/ask when was Panel 39 cast?` runs natural-language Q&A over the full site history.
-- **Automated reporting** — one-command daily summaries and monthly Excel exports (openpyxl), including a specialised D-Wall panel tracker.
-- **Multi-tenant** — one bot number serves many sites; each WhatsApp group gets its own isolated dataset and configuration.
-- **Group support** — the official Cloud API handles 1:1 chats; an optional Node/Baileys bridge extends the bot into WhatsApp groups.
+- **Automated reporting** — daily summaries, a whole-history export, per-month Excel workbooks, and a specialised D-Wall panel tracker.
+- **Single-group by design** — the bridge serves exactly one allowlisted group. See [Scope](#scope).
 
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
 | Backend | Python, FastAPI (async), Uvicorn |
-| AI | Anthropic Claude (`claude-sonnet-4-6`) |
-| Messaging | Meta WhatsApp Cloud API + webhooks; Baileys (Node) bridge for groups |
-| Data | Supabase (PostgreSQL) |
-| Reporting | openpyxl (Excel generation) |
-| Deployment | Railway (auto-deploy from GitHub) |
+| AI | Anthropic Claude — `claude-haiku-4-5` (parsing), `claude-sonnet-4-6` (`/ask`) |
+| Messaging | Baileys (Node) over WhatsApp Web |
+| Data | Cloud SQL for PostgreSQL 15, via psycopg |
+| Reporting | openpyxl |
+| Hosting | One Compute Engine VM running Docker Compose |
 
 ## Architecture
 
 ```
-WhatsApp ──► Meta Cloud API ──► /webhook (FastAPI)
-   ▲                                  │
-   │                                  ▼
+WhatsApp group ──► Baileys bridge (Node) ──► /baileys/incoming (FastAPI)
+   ▲                                                │
+   │                                                ▼
    │                          message_handler ──► commands (/daily, /excel, /ask …)
-   │                                  │
-   │                                  ▼
+   │                                                │
+   │                                                ▼
    └──── whatsapp_client ◄──── message_parser ──► Claude  (parse free-text)
-                                      │
-                                      ▼
-                               Supabase (Postgres)
-
-Groups:  WhatsApp group ──► Baileys bridge (Node) ──► /webhook
+                                                    │
+                                                    ▼
+                                        Cloud SQL for PostgreSQL
 ```
 
-Incoming webhooks are signature-verified against the Meta App Secret (HMAC-SHA256), and logging is pinned to `INFO` so service-role keys and tokens never reach the logs.
+The bridge holds an outbound WebSocket to WhatsApp, so **nothing needs to be reachable from the internet**. Both containers bind to `127.0.0.1`; there is no load balancer, no TLS terminator and no public ingress. `/baileys/incoming` is authenticated with a shared secret.
 
----
+There is no Meta Cloud API path. It was removed: the bot is used in groups, which the Cloud API cannot carry, so it was dead weight holding a live access token.
 
-## Setup Guide
+## Scope
 
-> **Group support:** The official Cloud API (this bot) only does 1:1 chats.
-> To run the bot inside WhatsApp **groups**, see `baileys-bridge/README.md` —
-> an optional unofficial companion service. (Unofficial = violates Meta's ToS;
-> use a separate, throwaway number.)
+The bridge **refuses to start without a group allowlist** and drops everything else before it reaches Python. This is deliberate — without it the bridge forwards every group the linked account belongs to, which on the live deployment was 125 groups and put stray rows into the log table.
 
-## What You Need Before Starting
+Match on JID (`ALLOWED_GROUP_IDS`), not name. Group subjects are not unique in practice — several groups on the live account are called `CR106 …` — and a rename silently stops ingestion.
 
-1. A **Meta Business Account** — business.facebook.com
-2. A **dedicated phone number** (SIM not currently on WhatsApp)
-3. A **Railway account** (free) — railway.app
-4. A **Supabase account** (free) — supabase.com
-5. An **Anthropic API key** — console.anthropic.com
+This makes the bot **single-tenant**. Serving a second site means a second deployment with its own database, or reworking the schema's `group_id` scoping into something the allowlist and the commands both understand.
 
----
+## Setup
 
-## Step 1 — Supabase (Database)
+### 1 — Database
 
-1. Go to supabase.com → New Project
-2. Once created, go to **SQL Editor**
-3. Paste the entire contents of `schema.sql` and run it
-4. Go to **Project Settings → API**
-   - Copy the **Project URL** → this is `SUPABASE_URL`
-   - Copy the **service_role key** (not anon key) → this is `SUPABASE_KEY`
+Create a PostgreSQL database and apply the schema:
 
----
+```bash
+gcloud sql connect <instance> --user=postgres --database=whatsapp_bot < schema.sql
+```
 
-## Step 2 — Meta Developer Setup (WhatsApp API)
+Put the connection string in `.env` as `DATABASE_URL`. On GCP, prefer a private IP over VPC peering so the instance has no public address.
 
-1. Go to developers.facebook.com → My Apps → Create App → Business
-2. Add **WhatsApp** product to your app
-3. Under **WhatsApp → API Setup**:
-   - Note your **Phone Number ID** → `WHATSAPP_PHONE_NUMBER_ID`
-   - Note your **WhatsApp Business Account ID** → `WHATSAPP_BUSINESS_ACCOUNT_ID`
-   - Click **Generate permanent token** (under System Users in Business Manager) → `WHATSAPP_TOKEN`
-4. Go to **App Settings → Basic**
-   - Copy **App Secret** → `APP_SECRET`
-5. Make up a random string for `WEBHOOK_VERIFY_TOKEN` (e.g. `mysitebot2026`)
+### 2 — Configure
 
-> Note: You must add a real phone number and verify it with Meta.
-> The test number works for development.
+```bash
+cp .env.example .env                              # DATABASE_URL, ANTHROPIC_API_KEY, bridge secret
+cp baileys-bridge/.env.example baileys-bridge/.env # ingest URL, same secret, group allowlist
+```
 
----
+`BRIDGE_SHARED_SECRET` must be identical in both files.
 
-## Step 3 — Deploy to Railway
+### 3 — Run
 
-1. Push this folder to a GitHub repo
-2. Go to railway.app → New Project → Deploy from GitHub
-3. Select your repo
-4. Go to **Variables** and add all values from `.env.example`:
-   ```
-   WHATSAPP_TOKEN=...
-   WHATSAPP_PHONE_NUMBER_ID=...
-   WHATSAPP_BUSINESS_ACCOUNT_ID=...
-   WEBHOOK_VERIFY_TOKEN=mysitebot2026
-   APP_SECRET=...
-   SUPABASE_URL=...
-   SUPABASE_KEY=...
-   ANTHROPIC_API_KEY=...
-   ```
-5. Go to **Settings → Networking → Generate Domain**
-   - Your webhook URL will be: `https://your-app.railway.app/webhook`
+```bash
+docker compose up -d --build
+docker compose logs -f bridge     # link the device once, via QR or PAIRING_NUMBER
+```
 
----
+### 4 — Find the group JID
 
-## Step 4 — Connect Webhook to Meta
+The bridge logs every group it can see on connect:
 
-1. Back in Meta Developer portal → WhatsApp → Configuration
-2. Set **Callback URL**: `https://your-app.railway.app/webhook`
-3. Set **Verify Token**: the same string you used for `WEBHOOK_VERIFY_TOKEN`
-4. Click **Verify and Save**
-5. Under **Webhook fields**, subscribe to **messages**
+```bash
+docker compose logs bridge | grep '"msg":"group"'
+```
 
----
+Copy the `jid` into `ALLOWED_GROUP_IDS` in `baileys-bridge/.env` and restart the bridge.
 
-## Step 5 — Add Bot to WhatsApp Group
-
-1. Add the bot's phone number to your WhatsApp group
-2. Type `/help` in the group to confirm it's working
-
----
+The linked-device session lives in the `baileys_auth` volume, so it survives rebuilds — you only link once.
 
 ## Bot Commands
 
@@ -132,12 +94,17 @@ Incoming webhooks are signature-verified against the Meta App Secret (HMAC-SHA25
 | `/setorder Zone1, Zone2, Zone3` | Set fixed location order for reports |
 | `/daily` | Generate today's progress summary |
 | `/reorder 3 1 2` | Reorder the daily summary by position |
+| `/delete 3 5 7` | Remove entries from the preview (session only) |
 | `/confirm` | Post the final daily report |
-| `/excel` | Export this month's logs as Excel |
-| `/excel Jan 2026` | Export a specific month |
+| `/excel` | Export the complete record as one flat sheet |
+| `/excel Jan 2026` | Export a single month, pivoted by location and date |
 | `/dwall` | Export D-Wall panel tracker as Excel |
 | `/ask when was Panel 39 cast?` | Ask a question about site history |
 | `/help` | Show this list |
+
+Bare `/excel` is flat rather than pivoted on purpose. The monthly layout puts locations down the side and dates across the top, which does not survive the full range: the history holds roughly 6,100 distinct main locations over 1,500 days, so a full-range pivot would be 214 weekly sheets thousands of rows deep. A named month keeps the pivot, where the location axis stays in the hundreds.
+
+The whole-history export takes 30–100 seconds to build and the bot sends no progress message — it goes quiet, then the file arrives.
 
 ## How Engineers Log Updates
 
@@ -150,27 +117,33 @@ Description: Honeycomb rectification works in progress
 Manpower: Worker – 1
 ```
 
-The bot is flexible — engineers don't need to follow the exact format. Claude will parse the meaning.
+That header is **not** required. Two locations are the norm — the first is the main location (the broad area), the second the sub location (the detail within it) — but a message naming a single location (`Zone 1 P4: FBCM materials fabrication`) is logged with that as the main location and a blank sub location, and a message naming none is still logged, under `Unknown`. Missing manpower is not disqualifying; it is absent from essentially the entire history. Only genuine chatter — greetings, "noted", leave notices — is ignored.
 
----
+## Backfilling history
 
-## Sharing Across Multiple Contracts
-
-Just add the same bot number to any other WhatsApp group. Each group has:
-- Its own separate database (logs, location order, panel records)
-- Its own `/setorder` configuration
-- Its own Excel exports
-
-No extra setup needed per group.
-
----
-
-## Running Locally (for development)
+`load_history.py` loads a spreadsheet that is already in the export's shape (`Day, Date, Main Location, Sub Location, Description / Activity, Manpower`) into `daily_logs`, deduplicating against what is already there on `(log_date, main_location, sub_location, description)`.
 
 ```bash
-pip install -r requirements.txt
-cp .env.example .env
-# Fill in .env values
-uvicorn main:app --reload --port 8000
-# Use ngrok to expose: ngrok http 8000
+python load_history.py Site_Report_Full.xlsx            # dry run, reports counts
+python load_history.py Site_Report_Full.xlsx --commit
 ```
+
+Backfilled rows are marked in `raw_message` and carry no sender; `logged_at` is derived from `log_date` plus row position so the sheet's within-day ordering survives.
+
+## Running Locally
+
+```bash
+pip install -r requirements-dev.txt
+cp .env.example .env      # fill in
+pytest
+uvicorn main:app --reload --port 8000
+```
+
+The test suite seeds dummy config in `tests/conftest.py` and makes no network calls, so it runs on a fresh checkout with no credentials.
+
+## Known limitations
+
+- **Parse failures are silent.** `message_handler` catches every exception from the parser and returns without logging, so an API error or malformed response is indistinguishable from a message that was deliberately ignored.
+- **Video captions are not read.** `extractText()` handles text, image and document captions plus the ephemeral/view-once wrappers, but not `videoMessage.caption`.
+- **Baileys occasionally cannot decrypt a message.** WhatsApp session state drifts; affected messages never reach the parser at all. Re-linking the device clears it.
+- **`log_date` is the processing date**, not the message date, so a message handled after midnight lands on the following day.
