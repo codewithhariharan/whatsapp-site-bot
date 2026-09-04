@@ -35,15 +35,25 @@ logger = logging.getLogger("site_bot")
 client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
 _SQL_MODEL = "claude-sonnet-4-6"      # writes the query; needs real capability
-_ANSWER_MODEL = "claude-sonnet-4-6"   # turns results into a WhatsApp reply
+
+# The answering call is the slow half — latency tracks output length almost
+# exactly (a 500-token day report takes ~8s on Sonnet, ~3.6s on Haiku), and the
+# database itself contributes under 100ms. Most questions come back as a count
+# or a handful of rows, which is rendering work rather than reasoning, so Haiku
+# answers those at roughly a third of the cost and half the latency with no
+# measured loss. Long row listings are different: they need grouping into a
+# readable shape, and Haiku flattens them, so those stay on Sonnet.
+_ANSWER_MODEL_SMALL = "claude-haiku-4-5-20251001"
+_ANSWER_MODEL_LARGE = "claude-sonnet-4-6"
+_SMALL_RESULT_ROWS = 20
 
 _QUERY_TIMEOUT_MS = 5000
-_MAX_RESULT_ROWS = 300
-_CONTEXT_CHAR_BUDGET = 200_000
+_MAX_RESULT_ROWS = 200
+_CONTEXT_CHAR_BUDGET = 25_000
 
 # Fallback retrieval caps, used only when the SQL path gives up.
-_MAX_LOG_ROWS = 400
-_MAX_PANEL_ROWS = 300
+_MAX_LOG_ROWS = 60
+_MAX_PANEL_ROWS = 25
 
 # ── Schema shown to the model ─────────────────────────────────────────────────
 
@@ -106,9 +116,7 @@ CRITICAL FACTS — ignoring these produces wrong answers:
 * log_date is the reliable date for daily_logs. Prefer it over logged_at."""
 
 
-_SQL_PROMPT = """Today is {today}.
-
-You write ONE PostgreSQL SELECT that answers a question about a construction
+_SQL_SYSTEM = """You write ONE PostgreSQL SELECT that answers a question about a construction
 site record, then someone else turns your result into a sentence.
 
 {schema}
@@ -131,64 +139,111 @@ RULES
    just bound it with a sensible LIMIT.
 6. If the question cannot be answered with SQL because it depends on the
    nuance of free-text wording rather than on counting or filtering, return
-   {{"sql": null, "keywords": ["..."]}} and a keyword search will run instead.
+   {"sql": null, "keywords": ["..."]} and a keyword search will run instead.
 
 Respond ONLY with JSON, no explanation, no code fences:
-{{"sql": "SELECT ...", "reasoning": "one short line"}}
+{"sql": "SELECT ...", "reasoning": "one short line"}
 
 EXAMPLES
 
 "how many entries are there for Zone 3 in August 2026?"
-{{"sql": "SELECT COUNT(*) AS n FROM daily_logs WHERE group_id = current_setting('app.group_id') AND main_location ILIKE 'Zone 3%' AND log_date BETWEEN '2026-08-01' AND '2026-08-31'", "reasoning": "count with date range"}}
+{"sql": "SELECT COUNT(*) AS n FROM daily_logs WHERE group_id = current_setting('app.group_id') AND main_location ILIKE 'Zone 3%' AND log_date BETWEEN '2026-08-01' AND '2026-08-31'", "reasoning": "count with date range"}
 
 "which zone had the most activity last month?"
-{{"sql": "SELECT substring(main_location from '^[A-Za-z]+ ?[0-9]+') AS zone, COUNT(*) AS n FROM daily_logs WHERE group_id = current_setting('app.group_id') AND log_date >= '2026-08-01' AND log_date <= '2026-08-31' GROUP BY 1 ORDER BY n DESC LIMIT 10", "reasoning": "group by zone prefix"}}
+{"sql": "SELECT substring(main_location from '^[A-Za-z]+ ?[0-9]+') AS zone, COUNT(*) AS n FROM daily_logs WHERE group_id = current_setting('app.group_id') AND log_date >= '2026-08-01' AND log_date <= '2026-08-31' GROUP BY 1 ORDER BY n DESC LIMIT 10", "reasoning": "group by zone prefix"}
 
 "what was the first dwall to cast in the duration of the project?"
-{{"sql": "SELECT panel_number, casting_start, casting_end FROM dwall_panels WHERE group_id = current_setting('app.group_id') AND casting_start IS NOT NULL AND casting_start <> '' ORDER BY to_date(substring(casting_start from '\\((\\d{{2}}/\\d{{2}}/\\d{{2}})\\)'), 'DD/MM/YY') LIMIT 3", "reasoning": "parse DD/MM/YY out of the text stage time"}}
+{"sql": "SELECT panel_number, casting_start, casting_end FROM dwall_panels WHERE group_id = current_setting('app.group_id') AND casting_start IS NOT NULL AND casting_start <> '' ORDER BY to_date(substring(casting_start from '\\((\\d{2}/\\d{2}/\\d{2})\\)'), 'DD/MM/YY') LIMIT 3", "reasoning": "parse DD/MM/YY out of the text stage time"}
 
-"what were the activities today?"
-{{"sql": "SELECT main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND log_date = '{today}' ORDER BY main_location LIMIT 200", "reasoning": "one day's rows"}}
+"what were the activities today?"   (if the user turn said today is 2026-09-04)
+{"sql": "SELECT main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND log_date = '2026-09-04' ORDER BY main_location LIMIT 200", "reasoning": "one day's rows; take the date from the user turn, never from this example"}
 
 "when was U3-38 cast?"
-{{"sql": "SELECT log_date, main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND (main_location ILIKE '%U3-38%' OR sub_location ILIKE '%U3-38%' OR raw_message ILIKE '%U3-38%') AND (description ILIKE '%cast%' OR raw_message ILIKE '%cast%') ORDER BY log_date LIMIT 10", "reasoning": "U3-38 is not a CN D-Wall panel, so casting lives in daily_logs free text"}}
+{"sql": "SELECT log_date, main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND (main_location ILIKE '%U3-38%' OR sub_location ILIKE '%U3-38%' OR raw_message ILIKE '%U3-38%') AND (description ILIKE '%cast%' OR raw_message ILIKE '%cast%') ORDER BY log_date LIMIT 10", "reasoning": "U3-38 is not a CN D-Wall panel, so casting lives in daily_logs free text"}
 
 "when was P46 last worked on?"
-{{"sql": "SELECT log_date, main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND (main_location ILIKE '%P46%' OR sub_location ILIKE '%P46%') ORDER BY log_date DESC LIMIT 5", "reasoning": "identifier lives in either column"}}
-
-Question:
-\"\"\"{question}\"\"\""""
+{"sql": "SELECT log_date, main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND (main_location ILIKE '%P46%' OR sub_location ILIKE '%P46%') ORDER BY log_date DESC LIMIT 5", "reasoning": "identifier lives in either column"}
+"""
 
 
 def _extract_json(text: str) -> dict:
+    """Pull the first JSON object out of a model reply.
+
+    The reply is asked to be JSON and nothing else, but occasionally arrives with
+    a sentence of commentary after the closing brace. Requiring the whole string
+    to parse turned that into a thrown-away query and a fallback that cost three
+    times as much, so scan for the first balanced object instead. Braces inside
+    string literals are skipped, which matters because the SQL routinely
+    contains them (regex quantifiers like \\d{2}).
+    """
     text = text.strip().replace("```json", "").replace("```", "").strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    start = text.find("{")
+    if start == -1:
+        raise json.JSONDecodeError("no JSON object in reply", text, 0)
+
+    depth = 0
+    in_string = escaped = False
+    for i, ch in enumerate(text[start:], start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start:i + 1])
+
+    raise json.JSONDecodeError("unbalanced JSON object in reply", text, start)
 
 
 def _write_sql(question: str, previous_error: str | None = None,
                previous_sql: str | None = None) -> dict:
-    """Ask the model for a query. On a retry, show it what Postgres said."""
-    content = _SQL_PROMPT.format(
-        today=site_today().isoformat(), schema=_SCHEMA, question=question
-    )
+    """Ask the model for a query. On a retry, show it what Postgres said.
+
+    The schema, rules and examples are ~1,800 tokens that never change, so they
+    live in a cached system prompt; only the date and the question travel in the
+    user turn. Caching is a prefix match, so anything volatile placed ahead of
+    the schema — the date used to be the prompt's first line — would invalidate
+    the whole thing on every call. Cached reads bill at a tenth of the rate, and
+    a retry re-reads the same prefix rather than paying for it twice.
+    """
+    user = f"Today is {site_today().isoformat()}.\n\nQuestion:\n\"\"\"{question}\"\"\""
     if previous_error:
-        content += (
+        user += (
             f"\n\nYour previous attempt failed. Fix it.\n"
             f"Query:\n{previous_sql}\n\nPostgres said:\n{previous_error}"
         )
 
     response = client.messages.create(
         model=_SQL_MODEL,
-        max_tokens=900,
-        messages=[{"role": "user", "content": content}],
+        max_tokens=400,          # a SELECT plus one line of reasoning
+        system=[{
+            "type": "text",
+            "text": _SQL_SYSTEM.replace("{schema}", _SCHEMA),
+            "cache_control": {"type": "ephemeral"},
+        }],
+        messages=[{"role": "user", "content": user}],
     )
     return _extract_json(response.content[0].text)
 
 
-def _run_sql_path(group_id: str, question: str) -> tuple[str, bool] | None:
+def _run_sql_path(group_id: str, question: str) -> tuple[str, bool, int] | None:
     """Write and run a query, retrying once on error. None = fall back.
 
-    Returns (rendered result block, hit_row_cap).
+    Returns (rendered result block, hit_row_cap, rows_shown).
     """
     attempt_error = attempt_sql = None
 
@@ -232,6 +287,7 @@ def _run_sql_path(group_id: str, question: str) -> tuple[str, bool] | None:
             f"QUERY RUN AGAINST THE FULL RECORD:\n{sql}\n\n"
             f"RESULT — {shown} row(s){note}:\n{blob}",
             truncated,
+            shown,
         )
 
     return None
@@ -296,7 +352,7 @@ def answer_query(group_id: str, question: str) -> str:
     sql_result = _run_sql_path(group_id, question)
 
     if sql_result is not None:
-        data, truncated = sql_result
+        data, truncated, rows_shown = sql_result
         provenance = (
             "The result below comes from a query run across the ENTIRE record "
             "(~40,000 entries), not a sample. If it reports a count or an "
@@ -308,6 +364,7 @@ def answer_query(group_id: str, question: str) -> str:
                 "listing is partial."
             )
     else:
+        rows_shown = _MAX_LOG_ROWS       # assume the wide path; prefer quality
         data = _keyword_fallback(group_id, question)
         provenance = (
             "The entries below are the best keyword matches, NOT the whole "
@@ -341,8 +398,10 @@ Panel stage times read '13:00hrs (20/02/26)' — that is DD/MM/YY.
 
 Question: {question}"""
 
+    model = (_ANSWER_MODEL_SMALL if rows_shown <= _SMALL_RESULT_ROWS
+             else _ANSWER_MODEL_LARGE)
     response = client.messages.create(
-        model=_ANSWER_MODEL,
+        model=model,
         max_tokens=1500,
         messages=[{"role": "user", "content": context}],
     )

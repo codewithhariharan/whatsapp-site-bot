@@ -131,7 +131,7 @@ class TestResultRendering:
     def test_result_block_carries_the_query_and_rows(self):
         with patch.object(ai_handler, "_write_sql", return_value={"sql": SCOPED}), \
              patch.object(db, "run_readonly_query", return_value=([{"n": 40024}], False)):
-            block, truncated = ai_handler._run_sql_path("G", "how many entries?")
+            block, truncated, shown = ai_handler._run_sql_path("G", "how many entries?")
         assert "40024" in block
         assert "daily_logs" in block          # the query itself is shown
         assert truncated is False
@@ -140,7 +140,7 @@ class TestResultRendering:
         rows = [{"i": i} for i in range(300)]
         with patch.object(ai_handler, "_write_sql", return_value={"sql": SCOPED}), \
              patch.object(db, "run_readonly_query", return_value=(rows, True)):
-            block, truncated = ai_handler._run_sql_path("G", "list everything")
+            block, truncated, shown = ai_handler._run_sql_path("G", "list everything")
         assert truncated is True
         assert "the query matched more" in block
 
@@ -176,13 +176,13 @@ class TestAnswerQueryProvenance:
         return answer, sent["content"]
 
     def test_sql_path_states_the_result_is_complete(self):
-        answer, prompt = self._run(("RESULT — 1 row(s):\n[{\"n\":40024}]", False))
+        answer, prompt = self._run(("RESULT — 1 row(s):\n[{\"n\":40024}]", False, 1))
         assert answer == "answer"
         assert "ENTIRE record" in prompt
         assert "that figure is complete" in prompt
 
     def test_truncated_sql_path_says_the_listing_is_partial(self):
-        _, prompt = self._run(("RESULT", True))
+        _, prompt = self._run(("RESULT", True, 5))
         assert "listing is partial" in prompt
 
     def test_fallback_path_warns_against_totals(self):
@@ -192,7 +192,7 @@ class TestAnswerQueryProvenance:
         assert "Do not give totals" in prompt
 
     def test_answer_is_whatsapp_formatted(self):
-        _, prompt = self._run(("RESULT", False))
+        _, prompt = self._run(("RESULT", False, 5))
         assert "single asterisks" in prompt
         assert "Never use #, ##, or **" in prompt
 
@@ -209,3 +209,108 @@ class TestFit:
 
     def test_no_rows(self):
         assert ai_handler._fit([], 1000) == ("[]", 0)
+
+
+class TestAnswerModelRouting:
+    """Small results are rendering work; big ones need grouping.
+
+    Latency tracks output length, so sending a one-row count to the larger model
+    costs seconds and cents for no gain — but a 29-row day report rendered by the
+    smaller model comes back as a flat list instead of grouped by area.
+    """
+
+    def _model_used_for(self, rows_shown, sql_result=True):
+        picked = {}
+
+        def fake_create(**kwargs):
+            picked["model"] = kwargs["model"]
+            return _reply("answer")
+
+        result = ("RESULT", False, rows_shown) if sql_result else None
+        with patch.object(ai_handler, "_run_sql_path", return_value=result), \
+             patch.object(ai_handler, "_keyword_fallback", return_value="DATA"), \
+             patch.object(ai_handler.client.messages, "create", side_effect=fake_create):
+            ai_handler.answer_query("G", "q")
+        return picked["model"]
+
+    def test_single_row_uses_the_small_model(self):
+        assert self._model_used_for(1) == ai_handler._ANSWER_MODEL_SMALL
+
+    def test_at_the_threshold_stays_small(self):
+        assert self._model_used_for(ai_handler._SMALL_RESULT_ROWS) == ai_handler._ANSWER_MODEL_SMALL
+
+    def test_just_over_the_threshold_uses_the_large_model(self):
+        assert self._model_used_for(ai_handler._SMALL_RESULT_ROWS + 1) == ai_handler._ANSWER_MODEL_LARGE
+
+    def test_day_report_sized_result_uses_the_large_model(self):
+        assert self._model_used_for(29) == ai_handler._ANSWER_MODEL_LARGE
+
+    def test_keyword_fallback_prefers_quality(self):
+        # The fallback hands over unaggregated rows, so treat it as the wide case.
+        assert self._model_used_for(0, sql_result=False) == ai_handler._ANSWER_MODEL_LARGE
+
+
+class TestPromptCaching:
+    def test_schema_is_sent_as_a_cached_system_prompt(self):
+        sent = {}
+
+        def fake_create(**kwargs):
+            sent.update(kwargs)
+            return _reply('{"sql": null}')
+
+        with patch.object(ai_handler.client.messages, "create", side_effect=fake_create):
+            ai_handler._write_sql("how many entries?")
+
+        system = sent["system"]
+        assert system[0]["cache_control"] == {"type": "ephemeral"}
+        assert "TABLE daily_logs" in system[0]["text"]
+        # The date is volatile; if it were in the cached prefix every new day
+        # would invalidate the cache, and worse, a stale date could be served.
+        assert "Today is" not in system[0]["text"]
+        assert "Today is" in sent["messages"][0]["content"]
+
+    def test_schema_placeholder_is_rendered_not_literal(self):
+        sent = {}
+        with patch.object(ai_handler.client.messages, "create",
+                          side_effect=lambda **kw: (sent.update(kw), _reply('{"sql": null}'))[1]):
+            ai_handler._write_sql("q")
+        text = sent["system"][0]["text"]
+        assert "{schema}" not in text
+        # .format() escapes are gone now that the prompt is not formatted.
+        assert "{{" not in text and "}}" not in text
+
+
+class TestExtractJsonTolerance:
+    """A trailing sentence used to cost a whole query plus a 3x fallback."""
+
+    def test_trailing_commentary_is_ignored(self):
+        got = ai_handler._extract_json(
+            '{"sql": "SELECT 1", "reasoning": "x"}\n\nThis counts the rows.')
+        assert got["sql"] == "SELECT 1"
+
+    def test_leading_commentary_is_ignored(self):
+        got = ai_handler._extract_json('Here is the query:\n{"sql": "SELECT 1"}')
+        assert got["sql"] == "SELECT 1"
+
+    def test_braces_inside_the_sql_string_do_not_end_the_object(self):
+        # Regex quantifiers appear in real generated SQL for the DD/MM/YY parse,
+        # so a brace scanner that ignores string literals would stop early.
+        sql = r"""SELECT to_date(substring(casting_start from '\((\d{2}/\d{2}/\d{2})\)'), 'DD/MM/YY')"""
+        raw = json.dumps({"sql": sql, "reasoning": "y"}) + "\n\nHope that helps."
+        assert ai_handler._extract_json(raw)["sql"] == sql
+
+    def test_escaped_quote_inside_string_is_handled(self):
+        raw = r'{"sql": "SELECT '"'"'a\\"b'"'"'", "reasoning": "z"} tail'
+        assert ai_handler._extract_json(raw)["reasoning"] == "z"
+
+    def test_nested_object_is_kept_whole(self):
+        got = ai_handler._extract_json('{"sql": null, "meta": {"a": {"b": 1}}} tail')
+        assert got["meta"]["a"]["b"] == 1
+
+    def test_no_json_at_all_still_raises(self):
+        with pytest.raises(json.JSONDecodeError):
+            ai_handler._extract_json("I cannot answer that")
+
+    def test_unbalanced_object_raises(self):
+        with pytest.raises(json.JSONDecodeError):
+            ai_handler._extract_json('{"sql": "SELECT 1"')
