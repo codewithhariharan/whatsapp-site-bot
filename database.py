@@ -222,8 +222,10 @@ def clear_reorder_session(group_id: str):
 
 # ── D-Wall panels ─────────────────────────────────────────────────────────────
 
-_DWALL_COLUMNS = {
-    "group_id",
+# Schema order, so a row built from these reads the way the paper form does.
+# _DWALL_COLUMNS (the write allow-list) is derived from it, and search_panels()
+# reuses the order when handing rows to the model.
+_DWALL_FIELDS = (
     "report_date", "engineer_initials", "entry_number", "panel_number", "panel_group",
     "panel_size", "guide_wall_level", "cut_off_level", "design_toe_level",
     "design_depth", "final_depth", "rock_hit",
@@ -236,7 +238,9 @@ _DWALL_COLUMNS = {
     "casting_start", "casting_end",
     "theo_volume", "actual_volume", "overbreak_pct",
     "downtime", "notes", "raw_message",
-}
+)
+
+_DWALL_COLUMNS = {"group_id", *_DWALL_FIELDS}
 
 _JSONB_COLUMNS = {"downtime"}
 
@@ -281,3 +285,199 @@ def get_all_panels(group_id: str) -> list[dict]:
         """,
         (group_id,),
     )
+
+
+# ── Search (backs /ask) ───────────────────────────────────────────────────────
+
+# Columns worth putting in front of the model. `raw_message` is deliberately
+# absent: it largely repeats description, and across 40k+ rows it was the single
+# biggest contributor to the oversized /ask prompt. Internal ids and phone
+# numbers are absent for the same reason — no answer needs them.
+_LOG_SEARCH_COLUMNS = (
+    "log_date", "sender_name", "main_location", "sub_location",
+    "description", "manpower",
+)
+
+_PANEL_SEARCH_COLUMNS = tuple(c for c in _DWALL_FIELDS if c != "raw_message")
+
+# Free-text columns a keyword is allowed to match. Matching every panel column
+# would score hits off level readings and volumes, which no question is about.
+_LOG_MATCH_COLUMNS = ("main_location", "sub_location", "description")
+_PANEL_MATCH_COLUMNS = ("panel_number", "panel_group", "engineer_initials", "notes")
+
+
+def _keyword_score(columns: tuple[str, ...], keywords: list[str]) -> tuple[str, list]:
+    """Build a SQL expression counting how many keywords a row matches.
+
+    Keywords are OR'd, never AND'd: engineers write "cast" where the question
+    says "casting", so requiring every term would drop the very row being asked
+    about. Narrowing happens through ordering instead — a row matching three
+    keywords outranks one matching a single keyword.
+
+    Column names come from the module constants above, never from user input,
+    so interpolating them is safe; the search terms themselves stay parameters.
+    """
+    parts, params = [], []
+    for kw in keywords:
+        ors = " OR ".join(f"{c} ILIKE %s" for c in columns)
+        parts.append(f"(CASE WHEN ({ors}) THEN 1 ELSE 0 END)")
+        params.extend([f"%{kw}%"] * len(columns))
+    return " + ".join(parts), params
+
+
+def search_logs(
+    group_id: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    keywords: list[str] | None = None,
+    limit: int = 400,
+) -> tuple[list[dict], int]:
+    """Return (most relevant rows, total number that matched).
+
+    The total is reported separately so the caller can tell the model when it is
+    looking at a subset — an answer drawn from the top 400 of 5,000 matches must
+    not be presented as if it covered the whole record.
+    """
+    keywords = [k for k in (keywords or []) if k.strip()]
+
+    where = ["group_id = %s"]
+    where_params: list = [group_id]
+    if date_from:
+        where.append("log_date >= %s")
+        where_params.append(date_from)
+    if date_to:
+        where.append("log_date <= %s")
+        where_params.append(date_to)
+
+    cols = ", ".join(_LOG_SEARCH_COLUMNS)
+
+    if keywords:
+        score_sql, score_params = _keyword_score(_LOG_MATCH_COLUMNS, keywords)
+        inner = f"""
+            SELECT {cols}, ({score_sql}) AS score
+            FROM daily_logs
+            WHERE {' AND '.join(where)}
+        """
+        params = score_params + where_params
+        order = "ORDER BY score DESC, log_date DESC"
+        having = "WHERE score > 0"
+    else:
+        # No keywords means the question is scoped by date alone ("what happened
+        # today"), so every row in the window is equally relevant.
+        inner = f"SELECT {cols} FROM daily_logs WHERE {' AND '.join(where)}"
+        params = where_params
+        order = "ORDER BY log_date DESC"
+        having = ""
+
+    total = _fetch(f"SELECT COUNT(*) AS n FROM ({inner}) t {having}", tuple(params))
+    rows = _fetch(
+        f"SELECT {cols} FROM ({inner}) t {having} {order} LIMIT %s",
+        tuple(params) + (limit,),
+    )
+    return rows, total[0]["n"]
+
+
+def search_panels(
+    group_id: str,
+    keywords: list[str] | None = None,
+    limit: int = 300,
+) -> tuple[list[dict], int]:
+    """Return (most relevant panel rows, total number that matched).
+
+    Panels are not filtered by date: report_date is a TEXT column holding
+    "22/02/26"-style strings, so a range comparison on it would be wrong rather
+    than merely imprecise. Questions about panel timing are answered from the
+    stage columns instead.
+    """
+    keywords = [k for k in (keywords or []) if k.strip()]
+    cols = ", ".join(_PANEL_SEARCH_COLUMNS)
+
+    if keywords:
+        score_sql, score_params = _keyword_score(_PANEL_MATCH_COLUMNS, keywords)
+        inner = f"""
+            SELECT {cols}, ({score_sql}) AS score
+            FROM dwall_panels
+            WHERE group_id = %s
+        """
+        params = score_params + [group_id]
+        order = "ORDER BY score DESC, panel_number"
+        having = "WHERE score > 0"
+    else:
+        inner = f"SELECT {cols} FROM dwall_panels WHERE group_id = %s"
+        params = [group_id]
+        order = "ORDER BY panel_number"
+        having = ""
+
+    total = _fetch(f"SELECT COUNT(*) AS n FROM ({inner}) t {having}", tuple(params))
+    rows = _fetch(
+        f"SELECT {cols} FROM ({inner}) t {having} {order} LIMIT %s",
+        tuple(params) + (limit,),
+    )
+    return rows, total[0]["n"]
+
+
+# ── Read-only ad-hoc queries (backs /ask) ─────────────────────────────────────
+
+class QueryError(Exception):
+    """A model-written query that Postgres rejected. Carries the DB's message
+    so the caller can hand it back to the model for a second attempt."""
+
+
+def run_readonly_query(
+    sql: str,
+    group_id: str,
+    timeout_ms: int = 5000,
+    max_rows: int = 300,
+) -> tuple[list[dict], bool]:
+    """Run one model-written SELECT and return (rows, hit_row_cap).
+
+    Three independent guards, none of which rely on inspecting the SQL text:
+
+    1. `SET TRANSACTION READ ONLY` — Postgres itself refuses INSERT/UPDATE/
+       DELETE/DDL inside the transaction. Pattern-matching the query string for
+       dangerous keywords is a blocklist and would eventually be wrong; this is
+       the database enforcing it. It is transaction-scoped, so a pooled
+       connection is never left in a modified state.
+    2. `statement_timeout` — a runaway join cannot pin the instance. This
+       matters more than usual: the database is a db-f1-micro shared with the
+       live logging path, so a slow /ask must not block engineers' updates.
+    3. A fetch cap — the query is not rewritten (that would risk changing its
+       meaning); we simply stop reading rows. One extra row is fetched so the
+       caller can tell the model its view was truncated.
+
+    psycopg's extended query protocol also refuses multiple statements in one
+    execute, so a trailing `; DROP ...` cannot ride along.
+
+    The group scope travels as a transaction-local setting rather than a bound
+    parameter, and the query is executed with NO parameters. That is deliberate:
+    psycopg only parses `%` placeholders when parameters are supplied, so a
+    perfectly ordinary `ILIKE '%P46%'` would otherwise blow up as a malformed
+    placeholder. The model writes `current_setting('app.group_id')` instead, and
+    literal percent signs stay literal.
+    """
+    statement = sql.strip().rstrip(";").strip()
+    if not statement:
+        raise QueryError("empty query")
+
+    try:
+        with get_pool().connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute("SET TRANSACTION READ ONLY")
+                    # SET takes no bound parameters; int() is the guard here and
+                    # set_config() is the parameterised form for the group id.
+                    cur.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
+                    cur.execute("SELECT set_config('app.group_id', %s, true)",
+                                (group_id,))
+                    cur.execute(statement)
+                    if cur.description is None:
+                        raise QueryError("query returned no result set")
+                    rows = cur.fetchmany(max_rows + 1)
+    except QueryError:
+        raise
+    except Exception as exc:
+        # Surface the database's own wording — "column x does not exist" is
+        # exactly what lets the model correct itself on the retry.
+        raise QueryError(str(exc).strip()) from exc
+
+    return rows[:max_rows], len(rows) > max_rows

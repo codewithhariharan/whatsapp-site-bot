@@ -1,7 +1,11 @@
+import asyncio
+import logging
 from datetime import date
 import database as db
 import excel_generator as xls
 from whatsapp_client import send_message, send_document
+
+logger = logging.getLogger("site_bot")
 
 
 # ── /help ─────────────────────────────────────────────────────────────────────
@@ -369,5 +373,22 @@ async def handle_ask(group_id: str, question: str):
         await send_message(group_id, "⚠️ Usage: /ask your question here")
         return
     await send_message(group_id, "🔍 Searching...")
-    answer = answer_query(group_id, question)
+
+    try:
+        # answer_query is synchronous — psycopg and the Anthropic client both
+        # block — and takes seconds. Run it off the event loop, or the bot stops
+        # logging everyone else's messages until it returns.
+        answer = await asyncio.to_thread(answer_query, group_id, question)
+    except Exception:
+        # Without this the failure was invisible: the caller logged it and
+        # returned, leaving "🔍 Searching..." as the last thing the group ever
+        # saw. Anyone waiting on an answer deserves to be told there isn't one.
+        logger.exception("/ask failed for %s: %r", group_id, question)
+        await send_message(
+            group_id,
+            "⚠️ Couldn't answer that one — the search failed.\n"
+            "Try rephrasing, or narrow it to a date or a location."
+        )
+        return
+
     await send_message(group_id, f"🤖 {answer}")
