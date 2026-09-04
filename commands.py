@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import date
+from sitetime import site_today
 import database as db
 import excel_generator as xls
 from whatsapp_client import send_message, send_document
@@ -121,7 +122,7 @@ def _format_daily_report(logs: list[dict], locations: list[str], report_date: da
 
 
 async def handle_daily(group_id: str, for_date: date = None):
-    today = for_date or date.today()
+    today = for_date or site_today()
     logs = db.get_logs_for_date(group_id, today)
     locations = db.get_location_order(group_id)
 
@@ -222,7 +223,7 @@ async def handle_excel(group_id: str, args: str = ""):
         await _export_full_record(group_id)
         return
 
-    today = date.today()
+    today = site_today()
     year, month = today.year, today.month
 
     try:

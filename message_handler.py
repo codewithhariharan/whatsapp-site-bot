@@ -1,4 +1,5 @@
 from datetime import date
+from sitetime import site_today
 import database as db
 from message_parser import classify_and_parse
 from whatsapp_client import send_message
@@ -70,7 +71,7 @@ async def handle_message(group_id: str, sender_name: str, sender_number: str, te
         db.upsert_group(group_id)
         db.insert_log(
             group_id=group_id,
-            log_date=date.today(),
+            log_date=site_today(),
             sender_name=sender_name,
             sender_number=sender_number,
             main_location=data.get("main_location", "Unknown"),

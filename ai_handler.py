@@ -27,6 +27,7 @@ from datetime import date
 import anthropic
 
 from config import settings
+from sitetime import site_today
 import database as db
 
 logger = logging.getLogger("site_bot")
@@ -43,7 +44,6 @@ _CONTEXT_CHAR_BUDGET = 200_000
 # Fallback retrieval caps, used only when the SQL path gives up.
 _MAX_LOG_ROWS = 400
 _MAX_PANEL_ROWS = 300
-
 
 # ── Schema shown to the model ─────────────────────────────────────────────────
 
@@ -76,6 +76,19 @@ TABLE dwall_panels  -- only ~19 rows, one per D-Wall / Barrette panel
 TABLE groups (group_id, group_name), location_order (group_id, location_name, order_index)
 
 CRITICAL FACTS — ignoring these produces wrong answers:
+
+* dwall_panels contains ONLY D-Wall / Barrette panels, and every one of them is
+  named 'CN####' (CN259 ... CN290). NOTHING ELSE IS IN THAT TABLE.
+  Identifiers like U3-37, U3-38, P46, P50, B2-01, MH5-2, DR4 are NOT D-Wall
+  panels — they are pile caps, grid references and structures, and everything
+  known about them lives in daily_logs (their casting included, described in
+  free text like 'lean con casting' or 'to cast lean concrete today').
+
+  So for a question like "when was U3-38 cast?": query daily_logs, not
+  dwall_panels. Only route to dwall_panels when the identifier starts with CN,
+  or the question explicitly says D-Wall or Barrette. When in doubt, search
+  daily_logs — an empty dwall_panels result reads to the user as "it was never
+  cast", which is a far worse answer than a partial one.
 
 * The panel/point identifier is stored INCONSISTENTLY. 'Zone 4 P46: ...' may be
   stored as main_location='Zone 4 P46', sub_location='' OR as
@@ -137,6 +150,9 @@ EXAMPLES
 "what were the activities today?"
 {{"sql": "SELECT main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND log_date = '{today}' ORDER BY main_location LIMIT 200", "reasoning": "one day's rows"}}
 
+"when was U3-38 cast?"
+{{"sql": "SELECT log_date, main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND (main_location ILIKE '%U3-38%' OR sub_location ILIKE '%U3-38%' OR raw_message ILIKE '%U3-38%') AND (description ILIKE '%cast%' OR raw_message ILIKE '%cast%') ORDER BY log_date LIMIT 10", "reasoning": "U3-38 is not a CN D-Wall panel, so casting lives in daily_logs free text"}}
+
 "when was P46 last worked on?"
 {{"sql": "SELECT log_date, main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND (main_location ILIKE '%P46%' OR sub_location ILIKE '%P46%') ORDER BY log_date DESC LIMIT 5", "reasoning": "identifier lives in either column"}}
 
@@ -153,7 +169,7 @@ def _write_sql(question: str, previous_error: str | None = None,
                previous_sql: str | None = None) -> dict:
     """Ask the model for a query. On a retry, show it what Postgres said."""
     content = _SQL_PROMPT.format(
-        today=date.today().isoformat(), schema=_SCHEMA, question=question
+        today=site_today().isoformat(), schema=_SCHEMA, question=question
     )
     if previous_error:
         content += (
@@ -300,6 +316,10 @@ def answer_query(group_id: str, question: str) -> str:
         )
 
     context = f"""You are a construction site assistant. Answer the question using only the data below.
+Today is {site_today().isoformat()} (site local time, UTC+8). Work out "today",
+"yesterday" and "last week" from that date and no other — never state a date you
+were not given here.
+
 Be concise and direct.
 
 The answer is sent straight into a WhatsApp group, which does not render
@@ -309,7 +329,12 @@ in the message. Keep it short enough to read on a phone.
 
 {provenance}
 
-If the answer is not in the data, say so plainly rather than guessing.
+If the answer is not in the data, say so plainly rather than guessing — but say
+it as "I could not find a record of X", never as "X has not happened". An empty
+result means the query found nothing, which is not the same as the work not
+having been done, and engineers read the difference. If the question was about
+an identifier that may simply be recorded elsewhere, say which records you
+checked and suggest they confirm.
 Panel stage times read '13:00hrs (20/02/26)' — that is DD/MM/YY.
 
 {data}
