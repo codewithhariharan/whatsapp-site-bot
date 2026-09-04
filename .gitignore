@@ -1,4 +1,8 @@
+# Bare `.env` matches only a file named exactly that. Real secrets also live
+# in prefixed files (deploy/gcp/bridge.env carries BRIDGE_SHARED_SECRET), so
+# match the suffix too. `.env.example` is unaffected and stays tracked.
 .env
+*.env
 __pycache__/
 *.pyc
 *.pyo
