@@ -11,14 +11,14 @@ A WhatsApp bot that turns a construction site's group chat into a structured rep
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Backend | Python, FastAPI (async), Uvicorn |
-| AI | Anthropic Claude — `claude-haiku-4-5` (parsing), `claude-sonnet-4-6` (`/ask`) |
-| Messaging | Baileys (Node) over WhatsApp Web |
-| Data | Cloud SQL for PostgreSQL 15, via psycopg |
-| Reporting | openpyxl |
-| Hosting | One Compute Engine VM running Docker Compose |
+| Layer     | Technology                                                                    |
+| --------- | ----------------------------------------------------------------------------- |
+| Backend   | Python, FastAPI (async), Uvicorn                                              |
+| AI        | Anthropic Claude — `claude-haiku-4-5` (parsing), `claude-sonnet-4-6` (`/ask`) |
+| Messaging | Baileys (Node) over WhatsApp Web                                              |
+| Data      | Cloud SQL for PostgreSQL 15, via psycopg                                      |
+| Reporting | openpyxl                                                                      |
+| Hosting   | One Compute Engine VM running Docker Compose                                  |
 
 ## Architecture
 
@@ -89,18 +89,18 @@ The linked-device session lives in the `baileys_auth` volume, so it survives reb
 
 ## Bot Commands
 
-| Command | Description |
-|---|---|
-| `/setorder Zone1, Zone2, Zone3` | Set fixed location order for reports |
-| `/daily` | Generate today's progress summary |
-| `/reorder 3 1 2` | Reorder the daily summary by position |
-| `/delete 3 5 7` | Remove entries from the preview (session only) |
-| `/confirm` | Post the final daily report |
-| `/excel` | Export the complete record as one flat sheet |
-| `/excel Jan 2026` | Export a single month, pivoted by location and date |
-| `/dwall` | Export D-Wall panel tracker as Excel |
-| `/ask when was Panel 39 cast?` | Ask a question about site history |
-| `/help` | Show this list |
+| Command                         | Description                                         |
+| ------------------------------- | --------------------------------------------------- |
+| `/setorder Zone1, Zone2, Zone3` | Set fixed location order for reports                |
+| `/daily`                        | Generate today's progress summary                   |
+| `/reorder 3 1 2`                | Reorder the daily summary by position               |
+| `/delete 3 5 7`                 | Remove entries from the preview (session only)      |
+| `/confirm`                      | Post the final daily report                         |
+| `/excel`                        | Export the complete record as one flat sheet        |
+| `/excel Jan 2026`               | Export a single month, pivoted by location and date |
+| `/dwall`                        | Export D-Wall panel tracker as Excel                |
+| `/ask when was Panel 39 cast?`  | Ask a question about site history                   |
+| `/help`                         | Show this list                                      |
 
 Bare `/excel` is flat rather than pivoted on purpose. The monthly layout puts locations down the side and dates across the top, which does not survive the full range: the history holds roughly 6,100 distinct main locations over 1,500 days, so a full-range pivot would be 214 weekly sheets thousands of rows deep. A named month keeps the pivot, where the location axis stays in the hundreds.
 
