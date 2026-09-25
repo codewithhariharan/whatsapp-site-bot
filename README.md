@@ -108,7 +108,9 @@ The whole-history export takes 30–100 seconds to build and the bot sends no pr
 
 ## How Engineers Log Updates
 
-Engineers just send their captions normally. The bot reads and stores them automatically, then replies ✅ Logged.
+Engineers just send their captions normally. The bot does not reply to each post: posts are held in `pending_messages` and logged in one pass at 00:00, 06:00, 12:00 and 18:00 Singapore time (`ingest_batch.py`). After each run the bot posts a single message listing any posts it could not log, so they can be resent; a run where everything logged stays silent. A post is filed under the day it arrived, not the day the run happened, so the midnight run does not move the evening's posts onto the next day.
+
+Commands and `/ask` still answer immediately. Two consequences of batching: `/daily`, `/excel` and `/ask` only see posts up to the last run, and a plain question typed without `/ask` in a site group is no longer answered — use `/ask`.
 
 ```
 Main Location: Zone 3, S2-2

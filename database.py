@@ -93,6 +93,48 @@ def upsert_group(group_id: str, group_name: str = None):
         (group_id, group_name),
     )
 
+# ── Pending messages (batch logging inbox) ────────────────────────────────────
+
+def enqueue_message(group_id: str, sender_name: str, sender_number: str, text: str):
+    """Hold a post for the next batch run. See migrations/003_pending_messages.sql."""
+    _execute(
+        """
+        INSERT INTO pending_messages (group_id, sender_name, sender_number, text)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (group_id, sender_name, sender_number, text),
+    )
+
+
+def get_pending_messages(received_before: datetime | None = None) -> list[dict]:
+    """Every post still waiting, oldest first.
+
+    Oldest first matters: a tunnel resend replaces the earlier row for the same
+    day, so the later message has to be applied last to win.
+    """
+    if received_before is None:
+        return _fetch(
+            "SELECT * FROM pending_messages WHERE status = 'pending' "
+            "ORDER BY received_at, id"
+        )
+    return _fetch(
+        "SELECT * FROM pending_messages WHERE status = 'pending' "
+        "AND received_at < %s ORDER BY received_at, id",
+        (received_before,),
+    )
+
+
+def mark_message(message_id: int, status: str, error: str | None = None):
+    _execute(
+        """
+        UPDATE pending_messages
+        SET status = %s, error = %s, processed_at = NOW()
+        WHERE id = %s
+        """,
+        (status, error, message_id),
+    )
+
+
 # ── Location order ────────────────────────────────────────────────────────────
 
 

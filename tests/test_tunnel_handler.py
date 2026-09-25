@@ -1,4 +1,4 @@
-"""Tunnel group routing, storage and confirmation.
+"""Tunnel group routing, batch storage and failure reporting.
 
 The separation from the site-work path is the thing under test here: a tunnel
 group must never reach classify_and_parse or daily_logs, and a site group must
@@ -6,15 +6,17 @@ never reach tunnel_updates. Getting that wrong mixes two records that the
 project deliberately keeps apart.
 """
 import asyncio
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
 import database as db
+import ingest_batch as ib
 import message_handler as mh
 import tunnel_handler as th
 import tunnel_parser as tp
 from config import settings
+from sitetime import SITE_TZ
 
 TUNNEL_GROUP = "120363111111111111@g.us"
 SITE_GROUP = "120363021760406818@g.us"
@@ -51,14 +53,32 @@ def sent(monkeypatch):
         outbox.append(text)
 
     monkeypatch.setattr(th, "send_message", send)
-    monkeypatch.setattr(mh, "send_message", send)
+    monkeypatch.setattr(ib, "send_message", send)
     monkeypatch.setattr(tp, "extract_numbers", lambda known: {"pct_completion": 68.73})
     monkeypatch.setattr(db, "upsert_group", lambda *a, **k: None)
     return outbox
 
 
 @pytest.fixture
-def stored(monkeypatch, sent):
+def queued(monkeypatch):
+    """Capture posts held for the batch run, as pending_messages rows."""
+    rows = []
+
+    def enqueue(group_id, sender_name, sender_number, text):
+        rows.append({
+            "id": len(rows) + 1, "group_id": group_id,
+            "sender_name": sender_name, "sender_number": sender_number,
+            "text": text, "received_at": RECEIVED,
+        })
+
+    monkeypatch.setattr(db, "enqueue_message", enqueue)
+    monkeypatch.setattr(db, "get_pending_messages", lambda cutoff=None: list(rows))
+    monkeypatch.setattr(db, "mark_message", lambda *a, **k: None)
+    return rows
+
+
+@pytest.fixture
+def stored(monkeypatch, sent, queued):
     """Capture what would have been written to tunnel_updates."""
     rows = []
 
@@ -70,8 +90,17 @@ def stored(monkeypatch, sent):
     return rows
 
 
+# 23:30 on 20 Aug, site time. The batch runs after midnight, so anything that
+# falls back to a date must take this one, not the run's.
+RECEIVED = datetime(2026, 8, 20, 23, 30, tzinfo=SITE_TZ)
+
+
 def route(text, group_id=TUNNEL_GROUP):
     return asyncio.run(mh.handle_message(group_id, "Hariharan", "6500000000", text))
+
+
+def batch():
+    return asyncio.run(ib.run_batch())
 
 
 # ── The two records stay apart ────────────────────────────────────────────────
@@ -83,8 +112,9 @@ class TestSeparation:
         def explode(_text):
             raise AssertionError("site parser must not see tunnel messages")
 
-        monkeypatch.setattr(mh, "classify_and_parse", explode)
+        monkeypatch.setattr(ib, "classify_and_parse", explode)
         route(SAMPLE)
+        batch()
         assert len(stored) == 1
 
     def test_a_tunnel_update_never_lands_in_daily_logs(
@@ -95,25 +125,30 @@ class TestSeparation:
 
         monkeypatch.setattr(db, "insert_log", explode)
         route(SAMPLE)
+        batch()
         assert stored[0][0] == TUNNEL_GROUP
 
     def test_a_site_group_never_reaches_the_tunnel_handler(
-        self, tunnel_group, sent, monkeypatch
+        self, tunnel_group, sent, queued, monkeypatch
     ):
         async def explode(*_a, **_k):
             raise AssertionError("site groups must not reach tunnel_handler")
 
+        def no_tunnel_parse(*_a, **_k):
+            raise AssertionError("site posts must not reach the tunnel parser")
+
         monkeypatch.setattr(mh, "handle_tunnel_message", explode)
-        monkeypatch.setattr(mh, "classify_and_parse", lambda _t: {"type": "ignore"})
+        monkeypatch.setattr(ib, "parse_tunnel_update", no_tunnel_parse)
+        monkeypatch.setattr(ib, "classify_and_parse", lambda _t: {"type": "ignore"})
         route("Zone 3, honeycomb rectification", group_id=SITE_GROUP)
+        assert batch() == {}
 
     def test_an_unset_allowlist_makes_no_group_a_tunnel_group(
-        self, monkeypatch, sent
+        self, monkeypatch, sent, queued
     ):
         # Fails closed, unlike the bridge allowlist: an unset value must not
         # turn every group into a tunnel group.
         monkeypatch.setattr(settings, "TUNNEL_GROUP_IDS", "")
-        monkeypatch.setattr(mh, "classify_and_parse", lambda _t: {"type": "ignore"})
 
         async def explode(*_a, **_k):
             raise AssertionError("no group is a tunnel group when unset")
@@ -131,8 +166,17 @@ class TestSeparation:
 # ── Logging an update ─────────────────────────────────────────────────────────
 
 class TestLogging:
+    def test_an_update_is_held_not_logged_and_gets_no_reply(
+        self, tunnel_group, stored, queued, sent
+    ):
+        route(SAMPLE)
+        assert [r["text"] for r in queued] == [SAMPLE]
+        assert stored == []
+        assert sent == []
+
     def test_the_update_is_stored_with_its_written_date(self, tunnel_group, stored):
         route(SAMPLE)
+        batch()
         _group, row = stored[0]
         assert row["contract"] == "P103"
         assert row["update_date"] == date(2026, 8, 15)
@@ -140,8 +184,16 @@ class TestLogging:
         assert row["sender_name"] == "Hariharan"
         assert row["raw_message"] == SAMPLE
 
+    def test_a_missing_date_line_falls_back_to_the_day_it_arrived(
+        self, tunnel_group, stored
+    ):
+        route(SAMPLE.replace("15 Aug 2026\n", ""))
+        batch()
+        assert stored[0][1]["update_date"] == date(2026, 8, 20)
+
     def test_the_verbatim_blocks_are_stored_untouched(self, tunnel_group, stored):
         route(SAMPLE)
+        batch()
         _group, row = stored[0]
         assert row["main_drive"] == "· Mined: P1203 to P1209"
         assert "% Completion: 68.73%" in row["tbm_progress"]
@@ -150,76 +202,37 @@ class TestLogging:
     def test_the_internal_date_flag_is_not_written_to_the_table(
         self, tunnel_group, stored
     ):
-        # date_was_stated drives the reply wording only; there is no such column.
         route(SAMPLE)
+        batch()
         assert "date_was_stated" not in stored[0][1]
 
-    def test_the_reply_is_just_logged(self, tunnel_group, stored, sent):
+    def test_a_clean_run_says_nothing(self, tunnel_group, stored, sent):
         route(SAMPLE)
-        assert sent == ["✅ Logged"]
-
-    def test_chat_is_neither_stored_nor_answered(self, tunnel_group, stored, sent):
-        route("noted sir")
-        assert stored == []
+        batch()
+        assert len(stored) == 1
         assert sent == []
 
-    def test_a_parse_failure_says_so_instead_of_going_quiet(
+    def test_chat_is_neither_queued_nor_answered(
+        self, tunnel_group, stored, queued, sent
+    ):
+        route("noted sir")
+        assert queued == []
+        assert sent == []
+
+    def test_a_parse_failure_is_reported_at_the_run(
         self, tunnel_group, stored, sent, monkeypatch
     ):
         def explode(*_a, **_k):
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(th, "parse_tunnel_update", explode)
+        monkeypatch.setattr(ib, "parse_tunnel_update", explode)
         route(SAMPLE)
+        assert sent == []          # nothing at post time
+        batch()
         assert stored == []
-        assert "wasn't logged" in sent[0]
-
-
-# ── The confirmation message ──────────────────────────────────────────────────
-
-class TestConfirmation:
-    def base(self, **overrides):
-        row = {
-            "contract": "P103",
-            "update_date": date(2026, 8, 15),
-            "main_drive": "x",
-            "tbm_progress": "y",
-            "delays": "z",
-            "exclamation": None,
-            "other_sections": {},
-            "pct_completion": 68.73,
-        }
-        row.update(overrides)
-        return row
-
-    def test_a_clean_parse_says_only_logged(self):
-        # The group asked for a receipt, not a recital.
-        text = th._confirmation(self.base(), replaced=False, date_was_stated=True)
-        assert text == "✅ Logged"
-
-    def test_nothing_is_recited_back_on_the_happy_path(self):
-        text = th._confirmation(
-            self.base(exclamation="CHANGING TBM MACHINE",
-                      other_sections={"Safety": "toolbox"}),
-            replaced=False, date_was_stated=True,
-        )
-        assert text == "✅ Logged"
-
-    def test_a_replacement_is_still_announced(self):
-        # Overwriting a day's figures silently is data loss the sender cannot
-        # see from their own message.
-        text = th._confirmation(self.base(), replaced=True, date_was_stated=True)
-        assert text.startswith("✅ Logged")
-        assert "Replaced" in text and "2026-08-15" in text
-
-    def test_a_missing_date_line_is_still_flagged(self):
-        text = th._confirmation(self.base(), replaced=False, date_was_stated=False)
-        assert text.startswith("✅ Logged")
-        assert "No date line" in text
-
-    def test_both_warnings_can_appear_together(self):
-        text = th._confirmation(self.base(), replaced=True, date_was_stated=False)
-        assert len(text.splitlines()) == 3
+        assert len(sent) == 1
+        assert "couldn't be logged" in sent[0]
+        assert "P103 Tunnel Update" in sent[0]
 
 
 # ── Questions ─────────────────────────────────────────────────────────────────

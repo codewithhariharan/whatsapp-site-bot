@@ -35,7 +35,8 @@ async def handle_help(group_id: str):
         "Example: /ask when was Panel 39 cast?\n\n"
         "📌 Engineers: just send your caption normally —\n"
         "Main Location, Sub Location, Description, Manpower.\n"
-        "The bot will reply ✅ Logged."
+        "Posts are logged at 12am, 6am, 12pm and 6pm —\n"
+        "the bot only replies if one couldn't be logged."
     )
     await send_message(group_id, text)
 

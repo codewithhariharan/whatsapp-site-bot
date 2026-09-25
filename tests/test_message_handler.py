@@ -24,12 +24,8 @@ def calls(monkeypatch):
     async def dwall(group_id):
         seen.append(("dwall", None))
 
-    async def noop(*a, **k):
-        pass
-
     monkeypatch.setattr(cmd, "handle_excel", excel)
     monkeypatch.setattr(cmd, "handle_dwall_export", dwall)
-    monkeypatch.setattr(mh, "send_message", noop)
     return seen
 
 

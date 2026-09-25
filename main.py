@@ -1,8 +1,12 @@
+import asyncio
 import hmac
 import logging
+from contextlib import asynccontextmanager, suppress
+
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from config import settings
 from message_handler import handle_message
+from ingest_batch import scheduler
 
 logging.basicConfig(
     # INFO (not DEBUG): DEBUG logs full request/response headers, which include
@@ -12,7 +16,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger("site_bot")
 
-app = FastAPI(title="Site Bot")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Batch logging at 00/06/12/18 site time. See ingest_batch.py.
+    task = asyncio.create_task(scheduler())
+    yield
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+app = FastAPI(title="Site Bot", lifespan=lifespan)
 
 
 # ── Incoming messages ─────────────────────────────────────────────────────────

@@ -10,9 +10,8 @@ answer questions, hand out the spreadsheet.
 import asyncio
 import logging
 
-from sitetime import site_today
 import database as db
-from tunnel_parser import is_tunnel_update, parse_tunnel_update
+from tunnel_parser import is_tunnel_update
 from whatsapp_client import send_message, send_document
 
 logger = logging.getLogger("site_bot")
@@ -35,7 +34,8 @@ HELP_TEXT = (
     "contract and date on the first two lines, then\n"
     "*Main Drive*, *TBM Progress* and *Delays*.\n"
     "Put anything critical between ‼ marks.\n"
-    "The bot will reply ✅ Logged."
+    "Updates are logged at 12am, 6am, 12pm and 6pm —\n"
+    "the bot only replies if one couldn't be logged."
 )
 
 
@@ -62,8 +62,12 @@ async def handle_tunnel_message(group_id: str, sender_name: str,
 
     # A structural test, not a model call: the group carries ordinary chat too,
     # and classifying every "noted" would cost a request each time.
+    # It is held for the next batch run (00/06/12/18), not logged now, and
+    # gets no reply — ingest_batch.py reports only the ones it could not log.
     if is_tunnel_update(text):
-        await _log_update(group_id, sender_name, sender_number, text)
+        await asyncio.to_thread(
+            db.enqueue_message, group_id, sender_name, sender_number, text
+        )
         return
 
     # Anything ending in a question mark, or opening with a question word, is
@@ -90,62 +94,6 @@ def _looks_like_question(text: str) -> bool:
     if stripped.endswith("?"):
         return True
     return stripped.lower().startswith(_QUESTION_OPENERS)
-
-
-async def _log_update(group_id: str, sender_name: str, sender_number: str, text: str):
-    """Parse and store one tunnel update, then confirm what was recorded."""
-    try:
-        # parse_tunnel_update makes a model call for the numeric extraction, so
-        # it blocks. Off the event loop, or the bot stops receiving while it
-        # runs.
-        row = await asyncio.to_thread(parse_tunnel_update, text, site_today())
-    except Exception:
-        logger.exception("tunnel: parse failed for %s: %r", group_id, text[:200])
-        await send_message(
-            group_id,
-            "⚠️ Couldn't read that update — it wasn't logged.\n"
-            "Check the contract and date lines at the top, then resend."
-        )
-        return
-
-    if not row:
-        return  # not an update after all; is_tunnel_update was optimistic
-
-    row["sender_name"] = sender_name
-    row["sender_number"] = sender_number
-    date_was_stated = row.pop("date_was_stated", True)
-
-    db.upsert_group(group_id)
-    replaced = await asyncio.to_thread(db.upsert_tunnel_update, group_id, row)
-
-    await send_message(group_id, _confirmation(row, replaced, date_was_stated))
-
-
-def _confirmation(row: dict, replaced: bool, date_was_stated: bool) -> str:
-    """Confirm the update was stored.
-
-    A clean parse gets "✅ Logged" and nothing else — the group asked for a
-    receipt, not a recital of what it just sent.
-
-    The two exceptions both involve losing data that was already there, which
-    the sender cannot see from their own message: a missing date line files the
-    update under today and can overwrite a different day, and a resend replaces
-    the row that was there before. Those get one extra line each.
-    """
-    lines = ["✅ Logged"]
-
-    if not date_was_stated:
-        lines.append(
-            f"⚠️ No date line — filed under {row['update_date']}. "
-            "Resend with the date on line 2 if that's wrong."
-        )
-    if replaced:
-        lines.append(
-            f"♻️ Replaced the earlier {row['contract']} update "
-            f"for {row['update_date']}."
-        )
-
-    return "\n".join(lines)
 
 
 async def handle_tunnel_ask(group_id: str, question: str):

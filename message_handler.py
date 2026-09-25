@@ -1,9 +1,6 @@
-from datetime import date
+import asyncio
 from config import settings
-from sitetime import site_today
 import database as db
-from message_parser import classify_and_parse
-from whatsapp_client import send_message
 import commands as cmd
 from tunnel_handler import handle_tunnel_message
 
@@ -69,39 +66,7 @@ async def handle_message(group_id: str, sender_name: str, sender_number: str, te
         await cmd.handle_ask(group_id, question)
         return
 
-    # ── Classify and parse non-command messages ───────────────────────────────
-    try:
-        parsed = classify_and_parse(text)
-    except Exception:
-        return  # Silently ignore parse errors for unrelated chat
-
-    msg_type = parsed.get("type")
-
-    if msg_type == "log":
-        data = parsed.get("data", {})
-        db.upsert_group(group_id)
-        db.insert_log(
-            group_id=group_id,
-            log_date=site_today(),
-            sender_name=sender_name,
-            sender_number=sender_number,
-            main_location=data.get("main_location", "Unknown"),
-            sub_location=data.get("sub_location", ""),
-            description=data.get("description", ""),
-            manpower=data.get("manpower", ""),
-            raw_message=text,
-        )
-        await send_message(group_id, "✅ Logged")
-
-    elif msg_type == "dwall":
-        data = parsed.get("data", {})
-        db.upsert_group(group_id)
-        db.upsert_dwall_panel(group_id, data)
-        panel_num = data.get("panel_number", "Panel")
-        await send_message(group_id, f"✅ {panel_num} logged in D-Wall tracker.")
-
-    elif msg_type == "query":
-        question = parsed.get("query", text)
-        await cmd.handle_ask(group_id, question)
-
-    # "ignore" → do nothing
+    # ── Everything else waits for the next batch run ──────────────────────────
+    # Logs, D-Wall entries and chat alike: no reply now. ingest_batch.py parses
+    # and logs them at 00/06/12/18 and reports only the posts it could not log.
+    await asyncio.to_thread(db.enqueue_message, group_id, sender_name, sender_number, text)
