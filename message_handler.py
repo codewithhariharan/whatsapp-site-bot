@@ -1,9 +1,11 @@
 from datetime import date
+from config import settings
 from sitetime import site_today
 import database as db
 from message_parser import classify_and_parse
 from whatsapp_client import send_message
 import commands as cmd
+from tunnel_handler import handle_tunnel_message
 
 
 async def handle_message(group_id: str, sender_name: str, sender_number: str, text: str):
@@ -11,6 +13,15 @@ async def handle_message(group_id: str, sender_name: str, sender_number: str, te
 
     text = text.strip()
     lower = text.lower()
+
+    # ── Tunnel groups ─────────────────────────────────────────────────────────
+    # Decided once, on the JID, before anything else runs. A tunnel group's
+    # messages must never reach classify_and_parse — that would file a TBM
+    # update into daily_logs as a site log, and the two records are meant to
+    # stay separate.
+    if group_id in settings.tunnel_group_ids:
+        await handle_tunnel_message(group_id, sender_name, sender_number, text)
+        return
 
     # ── Commands ──────────────────────────────────────────────────────────────
     if lower.startswith("/help"):

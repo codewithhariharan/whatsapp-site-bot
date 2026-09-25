@@ -46,6 +46,7 @@ def _json_row(cursor):
 
     return make_row
 
+
 # Built on first use, not at import time. Keeps `import database` cheap and
 # lets the test suite import the module without a database present.
 _pool: ConnectionPool | None = None
@@ -92,8 +93,8 @@ def upsert_group(group_id: str, group_name: str = None):
         (group_id, group_name),
     )
 
-
 # ── Location order ────────────────────────────────────────────────────────────
+
 
 def set_location_order(group_id: str, locations: list[str]):
     """Replace the location order for a group."""
@@ -102,7 +103,8 @@ def set_location_order(group_id: str, locations: list[str]):
     # group with no locations if the second one failed.
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM location_order WHERE group_id = %s", (group_id,))
+            cur.execute(
+                "DELETE FROM location_order WHERE group_id = %s", (group_id,))
             if locations:
                 cur.executemany(
                     """
@@ -212,7 +214,8 @@ def save_reorder_session(group_id: str, session_date: date, ordered_logs: list[d
 
 
 def get_reorder_session(group_id: str) -> dict | None:
-    rows = _fetch("SELECT * FROM reorder_sessions WHERE group_id = %s", (group_id,))
+    rows = _fetch(
+        "SELECT * FROM reorder_sessions WHERE group_id = %s", (group_id,))
     return rows[0] if rows else None
 
 
@@ -303,7 +306,8 @@ _PANEL_SEARCH_COLUMNS = tuple(c for c in _DWALL_FIELDS if c != "raw_message")
 # Free-text columns a keyword is allowed to match. Matching every panel column
 # would score hits off level readings and volumes, which no question is about.
 _LOG_MATCH_COLUMNS = ("main_location", "sub_location", "description")
-_PANEL_MATCH_COLUMNS = ("panel_number", "panel_group", "engineer_initials", "notes")
+_PANEL_MATCH_COLUMNS = ("panel_number", "panel_group",
+                        "engineer_initials", "notes")
 
 
 def _keyword_score(columns: tuple[str, ...], keywords: list[str]) -> tuple[str, list]:
@@ -369,7 +373,8 @@ def search_logs(
         order = "ORDER BY log_date DESC"
         having = ""
 
-    total = _fetch(f"SELECT COUNT(*) AS n FROM ({inner}) t {having}", tuple(params))
+    total = _fetch(
+        f"SELECT COUNT(*) AS n FROM ({inner}) t {having}", tuple(params))
     rows = _fetch(
         f"SELECT {cols} FROM ({inner}) t {having} {order} LIMIT %s",
         tuple(params) + (limit,),
@@ -393,7 +398,8 @@ def search_panels(
     cols = ", ".join(_PANEL_SEARCH_COLUMNS)
 
     if keywords:
-        score_sql, score_params = _keyword_score(_PANEL_MATCH_COLUMNS, keywords)
+        score_sql, score_params = _keyword_score(
+            _PANEL_MATCH_COLUMNS, keywords)
         inner = f"""
             SELECT {cols}, ({score_sql}) AS score
             FROM dwall_panels
@@ -408,7 +414,8 @@ def search_panels(
         order = "ORDER BY panel_number"
         having = ""
 
-    total = _fetch(f"SELECT COUNT(*) AS n FROM ({inner}) t {having}", tuple(params))
+    total = _fetch(
+        f"SELECT COUNT(*) AS n FROM ({inner}) t {having}", tuple(params))
     rows = _fetch(
         f"SELECT {cols} FROM ({inner}) t {having} {order} LIMIT %s",
         tuple(params) + (limit,),
@@ -466,7 +473,8 @@ def run_readonly_query(
                     cur.execute("SET TRANSACTION READ ONLY")
                     # SET takes no bound parameters; int() is the guard here and
                     # set_config() is the parameterised form for the group id.
-                    cur.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
+                    cur.execute(
+                        f"SET LOCAL statement_timeout = {int(timeout_ms)}")
                     cur.execute("SELECT set_config('app.group_id', %s, true)",
                                 (group_id,))
                     cur.execute(statement)
@@ -481,3 +489,185 @@ def run_readonly_query(
         raise QueryError(str(exc).strip()) from exc
 
     return rows[:max_rows], len(rows) > max_rows
+
+
+# ── Tunnel updates ────────────────────────────────────────────────────────────
+
+# Schema order, so a row built from these reads the way the reporting sheet
+# does. _TUNNEL_COLUMNS (the write allow-list) is derived from it, and
+# search_tunnel_updates() reuses the order when handing rows to the model.
+_TUNNEL_FIELDS = (
+    "contract", "title_line", "update_date", "drive_name",
+    "main_drive", "tbm_progress", "delays", "exclamation", "other_sections",
+    "mined_from", "mined_to", "ring_built_from", "ring_built_to",
+    "fsc_shift", "fsc_cumulative", "rings_total",
+    "day_shift_rings", "day_shift_cumulative",
+    "night_shift_rings", "night_shift_cumulative",
+    "pct_completion", "tbm_location", "instrumentation",
+    "delay_flag", "ds_loads", "ns_loads", "total_disposed_loads",
+    "disposed_rings_equiv", "rings_excavated", "delta_disposal",
+    "storage_rings", "storage_capacity_rings", "earthwork_subcon",
+    "sender_name", "sender_number", "raw_message",
+)
+
+_TUNNEL_COLUMNS = {"group_id", *_TUNNEL_FIELDS}
+
+_TUNNEL_JSONB_COLUMNS = {"other_sections"}
+
+
+def upsert_tunnel_update(group_id: str, data: dict) -> bool:
+    """Insert one tunnel update, replacing any earlier one for the same day.
+
+    Returns True when a row already existed for (group, contract, date) — the
+    caller says so in its reply, because silently overwriting yesterday's
+    figures with a mistyped resend is exactly the kind of thing a group needs
+    to see happen.
+
+    Unlike upsert_dwall_panel, every column in the allow-list is written, not
+    only the ones supplied: a correction that drops a section must clear that
+    section, not leave the previous message's text sitting in it.
+    """
+    clean = {k: data.get(k) for k in _TUNNEL_FIELDS}
+    clean["group_id"] = group_id
+
+    cols = list(clean.keys())
+    values = [
+        Jsonb(clean[c]) if c in _TUNNEL_JSONB_COLUMNS and not isinstance(clean[c], str)
+        else clean[c]
+        for c in cols
+    ]
+
+    # Column names come from _TUNNEL_FIELDS, never from user input, so this
+    # interpolation is safe.
+    col_list = ", ".join(cols)
+    placeholders = ", ".join(["%s"] * len(cols))
+    updates = ", ".join(
+        f"{c} = EXCLUDED.{c}"
+        for c in cols
+        if c not in ("group_id", "contract", "update_date")
+    )
+
+    rows = _fetch(
+        f"""
+        INSERT INTO tunnel_updates ({col_list})
+        VALUES ({placeholders})
+        ON CONFLICT (group_id, contract, update_date) DO UPDATE
+            SET {updates}, logged_at = NOW()
+        RETURNING (xmax <> 0) AS replaced
+        """,
+        tuple(values),
+    )
+    return bool(rows and rows[0]["replaced"])
+
+
+def get_tunnel_updates(
+    group_id: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    contract: str | None = None,
+) -> list[dict]:
+    """Every stored update, newest last — the order the Excel export wants."""
+    where = ["group_id = %s"]
+    params: list = [group_id]
+    if date_from:
+        where.append("update_date >= %s")
+        params.append(date_from)
+    if date_to:
+        where.append("update_date <= %s")
+        params.append(date_to)
+    if contract:
+        where.append("contract ILIKE %s")
+        params.append(contract)
+
+    return _fetch(
+        f"""
+        SELECT * FROM tunnel_updates
+        WHERE {' AND '.join(where)}
+        ORDER BY contract, update_date
+        """,
+        tuple(params),
+    )
+
+
+def get_tunnel_exclamations(
+    group_id: str,
+    date_from: date | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """The flagged (‼) entries only, newest first.
+
+    This is the director's question — "what are the critical activities" — and
+    it reads the exclamation column and nothing else, by design. Routing it
+    through the general SQL path would let the model widen the search into the
+    delays block, which is not the same thing and would bury the real flags.
+    """
+    where = ["group_id = %s", "exclamation IS NOT NULL", "exclamation <> ''"]
+    params: list = [group_id]
+    if date_from:
+        where.append("update_date >= %s")
+        params.append(date_from)
+
+    return _fetch(
+        f"""
+        SELECT contract, update_date, exclamation, sender_name
+        FROM tunnel_updates
+        WHERE {' AND '.join(where)}
+        ORDER BY update_date DESC, contract
+        LIMIT %s
+        """,
+        tuple(params) + (limit,),
+    )
+
+
+# Columns worth putting in front of the model in the fallback path. raw_message
+# is absent for the same reason it is absent from the site-log search: it
+# repeats the section blocks verbatim and doubles the prompt for nothing.
+_TUNNEL_SEARCH_COLUMNS = tuple(
+    c for c in _TUNNEL_FIELDS
+    if c not in ("raw_message", "sender_number", "title_line")
+)
+
+_TUNNEL_MATCH_COLUMNS = (
+    "contract", "drive_name", "main_drive", "tbm_progress", "delays",
+    "exclamation", "tbm_location", "earthwork_subcon",
+)
+
+
+def search_tunnel_updates(
+    group_id: str,
+    keywords: list[str] | None = None,
+    limit: int = 40,
+) -> tuple[list[dict], int]:
+    """Return (most relevant tunnel rows, total that matched).
+
+    Mirrors search_logs: keywords are OR'd and used for ranking rather than
+    filtering, so a question phrased "casting" still reaches a row that says
+    "cast".
+    """
+    keywords = [k for k in (keywords or []) if k.strip()]
+    cols = ", ".join(_TUNNEL_SEARCH_COLUMNS)
+
+    if keywords:
+        score_sql, score_params = _keyword_score(
+            _TUNNEL_MATCH_COLUMNS, keywords)
+        inner = f"""
+            SELECT {cols}, ({score_sql}) AS score
+            FROM tunnel_updates
+            WHERE group_id = %s
+        """
+        params = score_params + [group_id]
+        order = "ORDER BY score DESC, update_date DESC"
+        having = "WHERE score > 0"
+    else:
+        inner = f"SELECT {cols} FROM tunnel_updates WHERE group_id = %s"
+        params = [group_id]
+        order = "ORDER BY update_date DESC"
+        having = ""
+
+    total = _fetch(
+        f"SELECT COUNT(*) AS n FROM ({inner}) t {having}", tuple(params))
+    rows = _fetch(
+        f"SELECT {cols} FROM ({inner}) t {having} {order} LIMIT %s",
+        tuple(params) + (limit,),
+    )
+    return rows, total[0]["n"]

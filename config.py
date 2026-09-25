@@ -11,6 +11,22 @@ class Settings(BaseSettings):
     BAILEYS_BRIDGE_URL: str           # e.g. http://bridge:8088
     BRIDGE_SHARED_SECRET: str         # must match the bridge's BRIDGE_SHARED_SECRET
 
+    # Groups whose messages are tunnel updates rather than site work, as a
+    # comma-separated list of JIDs. These route to tunnel_updates and their
+    # /ask sees only that table; every other group keeps the existing
+    # daily_logs / dwall_panels behaviour.
+    #
+    # By JID, never by name: several groups on this account share a name
+    # prefix, so a name match is genuinely ambiguous here. Empty means no
+    # group is a tunnel group — this fails CLOSED, unlike the bridge
+    # allowlist, because the wrong answer is to start writing site logs into
+    # the tunnel table.
+    TUNNEL_GROUP_IDS: str = ""
+
+    @property
+    def tunnel_group_ids(self) -> set[str]:
+        return {g.strip() for g in self.TUNNEL_GROUP_IDS.split(",") if g.strip()}
+
     class Config:
         env_file = ".env"
         # The .env still carries the retired Cloud API keys (WHATSAPP_TOKEN,
