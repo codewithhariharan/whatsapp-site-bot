@@ -7,6 +7,7 @@ The VM reaches the instance over private IP, so the database has no public
 address and this string never leaves the VPC.
 """
 
+import re
 from datetime import date, datetime
 from uuid import UUID
 
@@ -476,13 +477,69 @@ class QueryError(Exception):
     so the caller can hand it back to the model for a second attempt."""
 
 
+# Every table that holds a group's data. A model-written query may touch only
+# the ones its caller allows; naming any other is refused before it runs.
+_DATA_TABLES = (
+    "daily_logs", "dwall_panels", "groups", "location_order", "reorder_sessions",
+    "pending_messages", "tunnel_updates", "tunnel_progress", "tunnel_flags",
+)
+
+_SCHEMA_QUALIFIED = re.compile(
+    r"\b(public|pg_catalog|information_schema|pg_temp\w*)\s*\.", re.I)
+
+
+def scoped_statement(statement: str, tables: tuple[str, ...],
+                     scope_to_group: bool, group_id: str = "") -> str:
+    """Wrap a model-written SELECT so it can only see what its group may see.
+
+    With `scope_to_group`, each allowed table is shadowed by a CTE of the same
+    name holding only this group's rows. Postgres resolves an unqualified table
+    name to a CTE before a real table, so whatever the model writes — a
+    missing filter, a UNION, a subquery — it is reading the group's rows and
+    nothing else. The group scope is enforced here, not requested in a prompt.
+
+    Tables outside `tables`, and any schema-qualified name (which would reach
+    past the CTE to the real table), are refused.
+    """
+    lowered = statement.lower()
+    for table in _DATA_TABLES:
+        if table not in tables and re.search(rf"\b{table}\b", lowered):
+            raise QueryError(f"table {table} is not available here")
+    if _SCHEMA_QUALIFIED.search(statement):
+        raise QueryError("schema-qualified names are not allowed; "
+                         "write table names unqualified")
+    if "set_config" in lowered:
+        # It could rewrite app.group_id mid-query; nothing legitimate needs it.
+        raise QueryError("set_config is not allowed")
+    if not scope_to_group:
+        return statement
+
+    # The group id is written in as a literal rather than read back from
+    # app.group_id, so nothing inside the statement can change which group it
+    # sees. JIDs are digits, "@" and "."; quotes are doubled regardless.
+    literal = "'" + group_id.replace("'", "''") + "'"
+    shadows = ",\n".join(
+        f"{t} AS (SELECT * FROM public.{t} WHERE group_id = {literal})"
+        for t in tables
+    )
+    # The newline before ")" keeps a trailing "-- comment" in the model's SQL
+    # from swallowing the closing parenthesis.
+    return f"WITH {shadows}\nSELECT * FROM (\n{statement}\n) AS scoped_result"
+
+
 def run_readonly_query(
     sql: str,
     group_id: str,
     timeout_ms: int = 5000,
     max_rows: int = 300,
+    tables: tuple[str, ...] = ("daily_logs", "dwall_panels", "groups", "location_order"),
+    scope_to_group: bool = True,
 ) -> tuple[list[dict], bool]:
     """Run one model-written SELECT and return (rows, hit_row_cap).
+
+    It may read only `tables`, and with `scope_to_group` only `group_id`'s rows
+    of them — see scoped_statement(). Only the tunnel master group passes
+    scope_to_group=False.
 
     Three independent guards, none of which rely on inspecting the SQL text:
 
@@ -511,6 +568,7 @@ def run_readonly_query(
     statement = sql.strip().rstrip(";").strip()
     if not statement:
         raise QueryError("empty query")
+    statement = scoped_statement(statement, tables, scope_to_group, group_id)
 
     try:
         with get_pool().connection() as conn:
@@ -557,7 +615,8 @@ def save_tunnel_update(group_id: str, update: dict, flags: list[str],
                        sent_at: datetime) -> bool:
     """File one update and its flags together. Returns True if it replaced one.
 
-    A resend for the same (contract, report date, drive) is a correction: its
+    A resend from the same group for the same (contract, report date, drive)
+    is a correction: its
     figures overwrite the earlier row and its flags replace the earlier
     update's flags — a "!" the engineer removed in the correction must not stay
     on the director's list. One transaction, so a failure leaves neither half.
@@ -580,9 +639,8 @@ def save_tunnel_update(group_id: str, update: dict, flags: list[str],
                     INSERT INTO tunnel_progress
                         (group_id, {cols}, sender_name, sender_number, sent_at)
                     VALUES (%s, {placeholders}, %s, %s, %s)
-                    ON CONFLICT (contract, report_date, drive) DO UPDATE
+                    ON CONFLICT (group_id, contract, report_date, drive) DO UPDATE
                         SET {updates},
-                            group_id = EXCLUDED.group_id,
                             sender_name = EXCLUDED.sender_name,
                             sender_number = EXCLUDED.sender_number,
                             sent_at = EXCLUDED.sent_at,
@@ -593,9 +651,9 @@ def save_tunnel_update(group_id: str, update: dict, flags: list[str],
                 )
                 replaced = bool(cur.fetchone()["replaced"])
                 cur.execute(
-                    "DELETE FROM tunnel_flags "
-                    "WHERE contract = %s AND report_date = %s AND drive = %s",
-                    key,
+                    "DELETE FROM tunnel_flags WHERE group_id = %s "
+                    "AND contract = %s AND report_date = %s AND drive = %s",
+                    (group_id, *key),
                 )
                 for text in flags:
                     cur.execute(

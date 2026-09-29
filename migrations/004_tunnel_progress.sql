@@ -15,8 +15,10 @@
 --   INSTRUMENTATION: LG3053 breached AL
 --   ISSUES: [shift change]
 --
--- One row per (contract, report date, drive). A resend for the same three is
--- a correction and replaces the earlier row.
+-- One row per (group, contract, report date, drive). A resend for the same
+-- four is a correction and replaces the earlier row. The group is part of the
+-- key so a group that mistypes its contract code cannot overwrite another
+-- contract group's row — each group's data stays its own.
 
 CREATE TABLE IF NOT EXISTS tunnel_progress (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -42,8 +44,8 @@ CREATE TABLE IF NOT EXISTS tunnel_progress (
     sent_at TIMESTAMPTZ NOT NULL,    -- when the message was posted to the group
     logged_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT tunnel_progress_contract_date_drive_unique
-        UNIQUE (contract, report_date, drive)
+    CONSTRAINT tunnel_progress_group_contract_date_drive_unique
+        UNIQUE (group_id, contract, report_date, drive)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tunnel_progress_contract_date
@@ -76,5 +78,5 @@ CREATE TABLE IF NOT EXISTS tunnel_flags (
 CREATE INDEX IF NOT EXISTS idx_tunnel_flags_day
     ON tunnel_flags (sent_date, contract);
 CREATE INDEX IF NOT EXISTS idx_tunnel_flags_update
-    ON tunnel_flags (contract, report_date, drive)
+    ON tunnel_flags (group_id, contract, report_date, drive)
     WHERE report_date IS NOT NULL;

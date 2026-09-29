@@ -278,9 +278,13 @@ def _run_sql_path(group_id: str, question: str) -> tuple[str, bool, int] | None:
             continue
 
         try:
+            # Confined to this group's site tables by the database layer; the
+            # tunnel tables are not reachable from a site group at all.
             rows, truncated = db.run_readonly_query(
                 sql, group_id,
                 timeout_ms=_QUERY_TIMEOUT_MS, max_rows=_MAX_RESULT_ROWS,
+                tables=("daily_logs", "dwall_panels", "groups", "location_order"),
+                scope_to_group=True,
             )
         except db.QueryError as exc:
             logger.warning("/ask: query rejected (attempt %d): %s", attempt, exc)

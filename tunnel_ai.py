@@ -203,9 +203,14 @@ def _run_sql_path(group_id: str, question: str,
             continue
 
         try:
+            # Only the master group reads across contracts. Everywhere else the
+            # database layer confines the query to this group's rows, whatever
+            # the model wrote.
             rows, truncated = db.run_readonly_query(
                 sql, group_id,
                 timeout_ms=_QUERY_TIMEOUT_MS, max_rows=_MAX_RESULT_ROWS,
+                tables=("tunnel_progress", "tunnel_flags"),
+                scope_to_group=not all_contracts,
             )
         except db.QueryError as exc:
             logger.warning("tunnel /ask: query rejected (attempt %d): %s", attempt, exc)

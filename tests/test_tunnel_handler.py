@@ -396,3 +396,52 @@ class TestExport:
         assert scopes == [None]
         assert documents[0][1] > 0
         assert "2 updates across 2 contracts" in documents[0][2]
+
+
+class TestContractIsolation:
+    def test_a_contract_groups_ask_is_run_scoped_to_that_group(self, monkeypatch):
+        import tunnel_ai
+        seen = {}
+
+        def run(sql, group_id, **kw):
+            seen.update(kw, group_id=group_id)
+            return [{"n": 1}], False
+
+        monkeypatch.setattr(tunnel_ai, "_write_sql",
+                            lambda *a, **k: {"sql": "SELECT COUNT(*) AS n FROM tunnel_progress "
+                                                    "WHERE group_id = current_setting('app.group_id')"})
+        monkeypatch.setattr(db, "run_readonly_query", run)
+        tunnel_ai._run_sql_path(TUNNEL_GROUP, "how many updates?", all_contracts=False)
+        assert seen["group_id"] == TUNNEL_GROUP
+        assert seen["scope_to_group"] is True
+        assert seen["tables"] == ("tunnel_progress", "tunnel_flags")
+
+    def test_only_the_master_group_runs_unscoped(self, monkeypatch):
+        import tunnel_ai
+        seen = {}
+
+        def run(sql, group_id, **kw):
+            seen.update(kw)
+            return [{"n": 1}], False
+
+        monkeypatch.setattr(tunnel_ai, "_write_sql",
+                            lambda *a, **k: {"sql": "SELECT COUNT(*) AS n FROM tunnel_progress"})
+        monkeypatch.setattr(db, "run_readonly_query", run)
+        tunnel_ai._run_sql_path(MASTER_GROUP, "how many updates?", all_contracts=True)
+        assert seen["scope_to_group"] is False
+
+    def test_the_site_groups_ask_cannot_reach_tunnel_tables(self, monkeypatch):
+        import ai_handler
+        seen = {}
+
+        def run(sql, group_id, **kw):
+            seen.update(kw)
+            return [], False
+
+        monkeypatch.setattr(ai_handler, "_write_sql",
+                            lambda *a, **k: {"sql": "SELECT 1 FROM daily_logs WHERE "
+                                                    "group_id = current_setting('app.group_id')"})
+        monkeypatch.setattr(db, "run_readonly_query", run)
+        ai_handler._run_sql_path(SITE_GROUP, "q")
+        assert seen["scope_to_group"] is True
+        assert "tunnel_progress" not in seen["tables"]
