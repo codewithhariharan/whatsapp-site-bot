@@ -107,8 +107,8 @@ def enqueue_message(group_id: str, sender_name: str, sender_number: str, text: s
 
 
 def get_pending_messages(received_before: datetime | None = None,
-                         group_id: str | None = None) -> list[dict]:
-    """Every post still waiting, oldest first; optionally one group's only.
+                         group_ids: list[str] | None = None) -> list[dict]:
+    """Every post still waiting, oldest first; optionally some groups' only.
 
     Oldest first matters: a tunnel resend replaces the earlier row for the same
     day, so the later message has to be applied last to win.
@@ -118,10 +118,10 @@ def get_pending_messages(received_before: datetime | None = None,
         SELECT * FROM pending_messages
         WHERE status = 'pending'
           AND (%s::timestamptz IS NULL OR received_at < %s)
-          AND (%s::text IS NULL OR group_id = %s)
+          AND (%s::text[] IS NULL OR group_id = ANY(%s))
         ORDER BY received_at, id
         """,
-        (received_before, received_before, group_id, group_id),
+        (received_before, received_before, group_ids, group_ids),
     )
 
 
@@ -537,181 +537,194 @@ def run_readonly_query(
     return rows[:max_rows], len(rows) > max_rows
 
 
-# ── Tunnel updates ────────────────────────────────────────────────────────────
+# ── Tunnel progress (standardised updates) ────────────────────────────────────
+#
+# See migrations/004_tunnel_progress.sql. Figures go to tunnel_progress, one row
+# per (contract, report date, drive); every "!" line goes to tunnel_flags, which
+# is all /!! ever reads.
 
-# Schema order, so a row built from these reads the way the reporting sheet
-# does. _TUNNEL_COLUMNS (the write allow-list) is derived from it, and
-# search_tunnel_updates() reuses the order when handing rows to the model.
-_TUNNEL_FIELDS = (
-    "contract", "title_line", "update_date", "drive_name",
-    "main_drive", "tbm_progress", "delays", "exclamation", "other_sections",
-    "mined_from", "mined_to", "ring_built_from", "ring_built_to",
-    "fsc_shift", "fsc_cumulative", "rings_total",
-    "day_shift_rings", "day_shift_cumulative",
-    "night_shift_rings", "night_shift_cumulative",
-    "pct_completion", "tbm_location", "instrumentation",
-    "delay_flag", "ds_loads", "ns_loads", "total_disposed_loads",
-    "disposed_rings_equiv", "rings_excavated", "delta_disposal",
-    "storage_rings", "storage_capacity_rings", "earthwork_subcon",
-    "sender_name", "sender_number", "raw_message",
+_PROGRESS_FIELDS = (
+    "contract", "report_date", "drive",
+    "rings_built", "current_ring", "total_rings", "pct_complete",
+    "tbm_location", "instrumentation", "issues", "raw_message",
 )
 
-_TUNNEL_COLUMNS = {"group_id", *_TUNNEL_FIELDS}
-
-_TUNNEL_JSONB_COLUMNS = {"other_sections"}
+_SITE_DATE = "(%s::timestamptz AT TIME ZONE 'Asia/Singapore')::date"
 
 
-def upsert_tunnel_update(group_id: str, data: dict) -> bool:
-    """Insert one tunnel update, replacing any earlier one for the same day.
+def save_tunnel_update(group_id: str, update: dict, flags: list[str],
+                       sender_name: str, sender_number: str,
+                       sent_at: datetime) -> bool:
+    """File one update and its flags together. Returns True if it replaced one.
 
-    Returns True when a row already existed for (group, contract, date) — the
-    caller says so in its reply, because silently overwriting yesterday's
-    figures with a mistyped resend is exactly the kind of thing a group needs
-    to see happen.
-
-    Unlike upsert_dwall_panel, every column in the allow-list is written, not
-    only the ones supplied: a correction that drops a section must clear that
-    section, not leave the previous message's text sitting in it.
+    A resend for the same (contract, report date, drive) is a correction: its
+    figures overwrite the earlier row and its flags replace the earlier
+    update's flags — a "!" the engineer removed in the correction must not stay
+    on the director's list. One transaction, so a failure leaves neither half.
     """
-    clean = {k: data.get(k) for k in _TUNNEL_FIELDS}
-    clean["group_id"] = group_id
-
-    cols = list(clean.keys())
-    values = [
-        Jsonb(clean[c]) if c in _TUNNEL_JSONB_COLUMNS and not isinstance(clean[c], str)
-        else clean[c]
-        for c in cols
-    ]
-
-    # Column names come from _TUNNEL_FIELDS, never from user input, so this
-    # interpolation is safe.
-    col_list = ", ".join(cols)
-    placeholders = ", ".join(["%s"] * len(cols))
+    values = [update.get(f) for f in _PROGRESS_FIELDS]
+    cols = ", ".join(_PROGRESS_FIELDS)
+    placeholders = ", ".join(["%s"] * len(_PROGRESS_FIELDS))
     updates = ", ".join(
-        f"{c} = EXCLUDED.{c}"
-        for c in cols
-        if c not in ("group_id", "contract", "update_date")
+        f"{c} = EXCLUDED.{c}" for c in _PROGRESS_FIELDS
+        if c not in ("contract", "report_date", "drive")
     )
+    key = (update["contract"], update["report_date"], update["drive"])
 
+    with get_pool().connection() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                # Column names come from _PROGRESS_FIELDS, never from input.
+                cur.execute(
+                    f"""
+                    INSERT INTO tunnel_progress
+                        (group_id, {cols}, sender_name, sender_number, sent_at)
+                    VALUES (%s, {placeholders}, %s, %s, %s)
+                    ON CONFLICT (contract, report_date, drive) DO UPDATE
+                        SET {updates},
+                            group_id = EXCLUDED.group_id,
+                            sender_name = EXCLUDED.sender_name,
+                            sender_number = EXCLUDED.sender_number,
+                            sent_at = EXCLUDED.sent_at,
+                            logged_at = NOW()
+                    RETURNING (xmax <> 0) AS replaced
+                    """,
+                    (group_id, *values, sender_name, sender_number, sent_at),
+                )
+                replaced = bool(cur.fetchone()["replaced"])
+                cur.execute(
+                    "DELETE FROM tunnel_flags "
+                    "WHERE contract = %s AND report_date = %s AND drive = %s",
+                    key,
+                )
+                for text in flags:
+                    cur.execute(
+                        f"""
+                        INSERT INTO tunnel_flags
+                            (group_id, contract, drive, report_date, flag_text,
+                             sender_name, sent_at, sent_date)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, {_SITE_DATE})
+                        """,
+                        (group_id, update["contract"], update["drive"],
+                         update["report_date"], text,
+                         sender_name, sent_at, sent_at),
+                    )
+    return replaced
+
+
+def save_tunnel_flags(group_id: str, contract: str | None, flags: list[str],
+                      sender_name: str, sent_at: datetime) -> None:
+    """File the "!" lines of a message that is not an update."""
+    with get_pool().connection() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                for text in flags:
+                    cur.execute(
+                        f"""
+                        INSERT INTO tunnel_flags
+                            (group_id, contract, flag_text, sender_name,
+                             sent_at, sent_date)
+                        VALUES (%s, %s, %s, %s, %s, {_SITE_DATE})
+                        """,
+                        (group_id, contract, text, sender_name, sent_at, sent_at),
+                    )
+
+
+def group_contract(group_id: str) -> str | None:
+    """The contract a group reports on, learnt from its latest update.
+
+    A flag posted as a loose message carries no CONTRACT line; each contract
+    has its own group, so the group's own updates say which contract it is.
+    """
     rows = _fetch(
-        f"""
-        INSERT INTO tunnel_updates ({col_list})
-        VALUES ({placeholders})
-        ON CONFLICT (group_id, contract, update_date) DO UPDATE
-            SET {updates}, logged_at = NOW()
-        RETURNING (xmax <> 0) AS replaced
-        """,
-        tuple(values),
+        "SELECT contract FROM tunnel_progress WHERE group_id = %s "
+        "ORDER BY report_date DESC, sent_at DESC LIMIT 1",
+        (group_id,),
     )
-    return bool(rows and rows[0]["replaced"])
+    return rows[0]["contract"] if rows else None
 
 
-def get_tunnel_updates(
-    group_id: str,
-    date_from: date | None = None,
-    date_to: date | None = None,
-    contract: str | None = None,
-) -> list[dict]:
-    """Every stored update, newest last — the order the Excel export wants."""
-    where = ["group_id = %s"]
-    params: list = [group_id]
-    if date_from:
-        where.append("update_date >= %s")
-        params.append(date_from)
-    if date_to:
-        where.append("update_date <= %s")
-        params.append(date_to)
-    if contract:
-        where.append("contract ILIKE %s")
-        params.append(contract)
-
+def get_flags_for_day(day: date, group_id: str | None = None) -> list[dict]:
+    """Every flag SENT on `day` (site time), by contract then time."""
+    where, params = ["sent_date = %s"], [day]
+    if group_id:
+        where.append("group_id = %s")
+        params.append(group_id)
     return _fetch(
         f"""
-        SELECT * FROM tunnel_updates
+        SELECT contract, drive, flag_text, sender_name, sent_at
+        FROM tunnel_flags
         WHERE {' AND '.join(where)}
-        ORDER BY contract, update_date
+        ORDER BY contract NULLS LAST, sent_at, id
         """,
         tuple(params),
     )
 
 
-def get_tunnel_exclamations(
-    group_id: str,
-    date_from: date | None = None,
-    limit: int = 50,
-) -> list[dict]:
-    """The flagged (‼) entries only, newest first.
-
-    This is the director's question — "what are the critical activities" — and
-    it reads the exclamation column and nothing else, by design. Routing it
-    through the general SQL path would let the model widen the search into the
-    delays block, which is not the same thing and would bury the real flags.
-    """
-    where = ["group_id = %s", "exclamation IS NOT NULL", "exclamation <> ''"]
-    params: list = [group_id]
-    if date_from:
-        where.append("update_date >= %s")
-        params.append(date_from)
-
+def get_all_flags(group_id: str | None = None) -> list[dict]:
+    """Every flag, newest first — for the export."""
+    where, params = "", ()
+    if group_id:
+        where, params = "WHERE group_id = %s", (group_id,)
     return _fetch(
         f"""
-        SELECT contract, update_date, exclamation, sender_name
-        FROM tunnel_updates
-        WHERE {' AND '.join(where)}
-        ORDER BY update_date DESC, contract
-        LIMIT %s
+        SELECT sent_date, contract, drive, flag_text, sender_name, sent_at
+        FROM tunnel_flags {where}
+        ORDER BY sent_at DESC, id DESC
         """,
-        tuple(params) + (limit,),
+        params,
     )
 
 
-# Columns worth putting in front of the model in the fallback path. raw_message
-# is absent for the same reason it is absent from the site-log search: it
-# repeats the section blocks verbatim and doubles the prompt for nothing.
-_TUNNEL_SEARCH_COLUMNS = tuple(
-    c for c in _TUNNEL_FIELDS
-    if c not in ("raw_message", "sender_number", "title_line")
+def get_tunnel_progress(group_id: str | None = None) -> list[dict]:
+    """Every update, oldest first within each contract and drive."""
+    where, params = "", ()
+    if group_id:
+        where, params = "WHERE group_id = %s", (group_id,)
+    return _fetch(
+        f"""
+        SELECT contract, report_date, drive, rings_built, current_ring,
+               total_rings, pct_complete, tbm_location, instrumentation,
+               issues, sender_name, sent_at
+        FROM tunnel_progress {where}
+        ORDER BY contract, drive, report_date
+        """,
+        params,
+    )
+
+
+_PROGRESS_SEARCH_COLUMNS = (
+    "contract", "report_date", "drive", "rings_built", "current_ring",
+    "total_rings", "pct_complete", "tbm_location", "instrumentation", "issues",
+)
+_PROGRESS_MATCH_COLUMNS = (
+    "contract", "drive", "tbm_location", "instrumentation", "issues",
 )
 
-_TUNNEL_MATCH_COLUMNS = (
-    "contract", "drive_name", "main_drive", "tbm_progress", "delays",
-    "exclamation", "tbm_location", "earthwork_subcon",
-)
 
-
-def search_tunnel_updates(
-    group_id: str,
+def search_tunnel_progress(
     keywords: list[str] | None = None,
+    group_id: str | None = None,
     limit: int = 40,
 ) -> tuple[list[dict], int]:
-    """Return (most relevant tunnel rows, total that matched).
-
-    Mirrors search_logs: keywords are OR'd and used for ranking rather than
-    filtering, so a question phrased "casting" still reaches a row that says
-    "cast".
-    """
+    """Return (most relevant updates, total that matched). Mirrors search_logs."""
     keywords = [k for k in (keywords or []) if k.strip()]
-    cols = ", ".join(_TUNNEL_SEARCH_COLUMNS)
+    cols = ", ".join(_PROGRESS_SEARCH_COLUMNS)
+    scope, scope_params = ("WHERE group_id = %s", [group_id]) if group_id else ("", [])
 
     if keywords:
-        score_sql, score_params = _keyword_score(
-            _TUNNEL_MATCH_COLUMNS, keywords)
-        inner = f"""
-            SELECT {cols}, ({score_sql}) AS score
-            FROM tunnel_updates
-            WHERE group_id = %s
-        """
-        params = score_params + [group_id]
-        order = "ORDER BY score DESC, update_date DESC"
+        score_sql, score_params = _keyword_score(_PROGRESS_MATCH_COLUMNS, keywords)
+        inner = f"SELECT {cols}, ({score_sql}) AS score FROM tunnel_progress {scope}"
+        params = score_params + scope_params
+        order = "ORDER BY score DESC, report_date DESC"
         having = "WHERE score > 0"
     else:
-        inner = f"SELECT {cols} FROM tunnel_updates WHERE group_id = %s"
-        params = [group_id]
-        order = "ORDER BY update_date DESC"
+        inner = f"SELECT {cols} FROM tunnel_progress {scope}"
+        params = scope_params
+        order = "ORDER BY report_date DESC"
         having = ""
 
-    total = _fetch(
-        f"SELECT COUNT(*) AS n FROM ({inner}) t {having}", tuple(params))
+    total = _fetch(f"SELECT COUNT(*) AS n FROM ({inner}) t {having}", tuple(params))
     rows = _fetch(
         f"SELECT {cols} FROM ({inner}) t {having} {order} LIMIT %s",
         tuple(params) + (limit,),

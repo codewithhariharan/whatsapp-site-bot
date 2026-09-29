@@ -334,78 +334,64 @@ def generate_full_excel(logs: list[dict]) -> bytes:
     return buf.getvalue()
 
 
-# ── Tunnel updates ────────────────────────────────────────────────────────────
+# ── Tunnel progress ───────────────────────────────────────────────────────────
 
-# Sheet 1 reproduces the reporting spreadsheet exactly: the six columns, the
-# section blocks verbatim in their cells, one row per contract per day. Sheet 2
-# carries the numbers pulled out of those blocks, which is what makes the record
-# sortable and chartable — the two are the same data, not two versions of it.
-_TUNNEL_MAIN_COLUMNS = (
-    ("Contract",         "contract",     14),
-    ("Date",             "update_date",  12),
-    ("LDTBM Main Drive", "main_drive",   46),
-    ("TBM Progress",     "tbm_progress", 46),
-    ("Delays",           "delays",       46),
-    ("Exclamation Mark", "exclamation",  30),
+# One row per update, the template's fields in the template's order. Numbers go
+# in as numbers so the sheet can be sorted, filtered and charted.
+_TUNNEL_PROGRESS_COLUMNS = (
+    ("Contract",            "contract",        12),
+    ("Report Date",         "report_date",     13),
+    ("Drive",               "drive",           24),
+    ("Rings Built",         "rings_built",     11),
+    ("Current Ring",        "current_ring",    12),
+    ("Total Rings",         "total_rings",     11),
+    ("% Complete",          "pct_complete",    11),
+    ("TBM Location",        "tbm_location",    30),
+    ("Instrumentation",     "instrumentation", 34),
+    ("Issues",              "issues",          34),
+    ("Sent By",             "sender_name",     18),
+    ("Sent At (SGT)",       "sent_at",         17),
 )
 
-_TUNNEL_FIGURE_COLUMNS = (
-    ("Contract",            "contract",              14),
-    ("Date",                "update_date",           12),
-    ("Drive",               "drive_name",            20),
-    ("Mined From",          "mined_from",            12),
-    ("Mined To",            "mined_to",              12),
-    ("Ring Built From",     "ring_built_from",       14),
-    ("Ring Built To",       "ring_built_to",         14),
-    ("FSC (shift)",         "fsc_shift",             11),
-    ("FSC (cum.)",          "fsc_cumulative",        11),
-    ("Day Shift Rings",     "day_shift_rings",       13),
-    ("Day Shift Cum.",      "day_shift_cumulative",  13),
-    ("Night Shift Rings",   "night_shift_rings",     14),
-    ("Night Shift Cum.",    "night_shift_cumulative", 14),
-    ("Total Rings",         "rings_total",           11),
-    ("% Completion",        "pct_completion",        12),
-    ("TBM Location",        "tbm_location",          24),
-    ("Instrumentation",     "instrumentation",       18),
-    ("Delay",               "delay_flag",            14),
-    ("DS Loads",            "ds_loads",              10),
-    ("NS Loads",            "ns_loads",              10),
-    ("Total Disposed",      "total_disposed_loads",  13),
-    ("Disposed (rings)",    "disposed_rings_equiv",  14),
-    ("Rings Excavated",     "rings_excavated",       14),
-    ("Delta Disposal",      "delta_disposal",        13),
-    ("Storage (rings)",     "storage_rings",         13),
-    ("Storage Capacity",    "storage_capacity_rings", 15),
-    ("Earthwork Subcon",    "earthwork_subcon",      16),
-    ("Reported By",         "sender_name",           18),
+_TUNNEL_FLAG_COLUMNS = (
+    ("Date Sent",           "sent_date",       13),
+    ("Contract",            "contract",        12),
+    ("Drive",               "drive",           24),
+    ("Item (!)",            "flag_text",       70),
+    ("Sent By",             "sender_name",     18),
+    ("Sent At (SGT)",       "sent_at",         17),
 )
+
+_DATE_FIELDS = {"report_date", "sent_date"}
 
 CRITICAL_FILL = PatternFill("solid", start_color="FCE4E4")
 CRITICAL_FONT = Font(bold=True, name="Arial", size=9, color="9C0006")
 
 
-def _tunnel_cell_value(update: dict, field: str):
+def _tunnel_cell_value(row: dict, field: str):
     """Render one field for a spreadsheet cell.
 
-    Numerics go in as numbers and dates as dates, not as strings — a percentage
-    or a date stored as text cannot be sorted, filtered or charted, which is the
-    whole reason the extracted columns exist. database.py hands dates back as
-    ISO strings (see its _coerce), so the conversion has to happen here.
+    database.py hands dates and timestamps back as ISO strings (see _coerce),
+    so they are turned back into real dates here — a date stored as text
+    cannot be sorted or filtered.
     """
-    value = update.get(field)
+    from datetime import datetime
+    from sitetime import SITE_TZ
+
+    value = row.get(field)
     if value is None:
         return ""
-    if field == "update_date":
-        if isinstance(value, date):
-            return value
+    if field in _DATE_FIELDS:
         try:
-            return date.fromisoformat(str(value))
+            return value if isinstance(value, date) else date.fromisoformat(str(value))
         except ValueError:
             return str(value)
-    if field == "other_sections":
-        if not value:
-            return ""
-        return "\n\n".join(f"{k}:\n{v}" for k, v in value.items())
+    if field == "sent_at":
+        try:
+            when = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+            return when.astimezone(SITE_TZ).strftime("%d %b %Y %H:%M")
+        except ValueError:
+            return str(value)
     if isinstance(value, str):
         return value
     try:
@@ -415,7 +401,7 @@ def _tunnel_cell_value(update: dict, field: str):
     return int(as_float) if as_float.is_integer() else as_float
 
 
-def _write_tunnel_sheet(ws, updates: list[dict], columns, wrap: bool):
+def _write_tunnel_sheet(ws, rows: list[dict], columns, critical: bool = False):
     ws.sheet_view.showGridLines = False
 
     for i, (header, _field, width) in enumerate(columns, start=1):
@@ -428,61 +414,38 @@ def _write_tunnel_sheet(ws, updates: list[dict], columns, wrap: bool):
         )
     ws.row_dimensions[1].height = 24
 
-    for row_i, update in enumerate(updates, start=2):
-        tallest = 1
+    for row_i, row in enumerate(rows, start=2):
         for col_i, (_header, field, _w) in enumerate(columns, start=1):
-            value = _tunnel_cell_value(update, field)
+            value = _tunnel_cell_value(row, field)
             cell = ws.cell(row=row_i, column=col_i, value=value)
-            font, fill = CELL_FONT, None
-            # The flagged column is the one a director scans for, so it is
-            # coloured rather than left to be found among six columns of prose.
-            if field == "exclamation" and value:
-                font, fill = CRITICAL_FONT, CRITICAL_FILL
+            flagged = critical and field == "flag_text"
             _style_cell(
-                cell, font=font, fill=fill,
-                alignment=Alignment(vertical="top", wrap_text=wrap,
+                cell,
+                font=CRITICAL_FONT if flagged else CELL_FONT,
+                fill=CRITICAL_FILL if flagged else None,
+                alignment=Alignment(vertical="top", wrap_text=True,
                                     horizontal="left"),
             )
             if isinstance(value, date):
                 cell.number_format = "dd mmm yyyy"
-            if wrap and isinstance(value, str):
-                tallest = max(tallest, value.count("\n") + 1)
-        if wrap:
-            ws.row_dimensions[row_i].height = min(15 * tallest + 6, 320)
 
-    ws.freeze_panes = "C2" if wrap else "A2"
-    ws.auto_filter.ref = (
-        f"A1:{get_column_letter(len(columns))}{len(updates) + 1}"
-    )
+    ws.freeze_panes = "B2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{len(rows) + 1}"
 
 
-def generate_tunnel_excel(updates: list[dict]) -> bytes:
-    """Build the tunnel report: the reporting sheet, plus figures and flags."""
+def generate_tunnel_excel(updates: list[dict], flags: list[dict]) -> bytes:
+    """The tunnel record: every update, then every "!" item, newest first."""
     wb = Workbook()
 
     ws = wb.active
-    ws.title = "Tunnel Updates"
-    _write_tunnel_sheet(ws, updates, _TUNNEL_MAIN_COLUMNS, wrap=True)
+    ws.title = "Tunnel Progress"
+    _write_tunnel_sheet(ws, updates, _TUNNEL_PROGRESS_COLUMNS)
 
-    figures = wb.create_sheet("Figures")
-    _write_tunnel_sheet(figures, updates, _TUNNEL_FIGURE_COLUMNS, wrap=False)
-
-    # A sheet of its own for the flagged items. It is a filter away on sheet 1,
-    # but the person who asks for these is the one least likely to apply it.
-    flagged = [u for u in updates if (u.get("exclamation") or "").strip()]
-    if flagged:
-        ws_flags = wb.create_sheet("Critical")
-        _write_tunnel_sheet(
-            ws_flags,
-            sorted(flagged, key=lambda u: str(u.get("update_date")), reverse=True),
-            (
-                ("Contract",         "contract",    14),
-                ("Date",             "update_date", 12),
-                ("Exclamation Mark", "exclamation", 60),
-                ("Reported By",      "sender_name", 18),
-            ),
-            wrap=True,
-        )
+    # A sheet of its own for the "!" items: the person who asks for these is
+    # the one least likely to go filtering for them.
+    if flags:
+        _write_tunnel_sheet(wb.create_sheet("Critical (!)"), flags,
+                            _TUNNEL_FLAG_COLUMNS, critical=True)
 
     buf = io.BytesIO()
     wb.save(buf)

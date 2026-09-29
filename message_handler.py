@@ -2,7 +2,7 @@ import asyncio
 from config import settings
 import database as db
 import commands as cmd
-from tunnel_handler import handle_tunnel_message
+from tunnel_handler import handle_master_message, handle_tunnel_message
 
 
 async def handle_message(group_id: str, sender_name: str, sender_number: str, text: str):
@@ -10,6 +10,13 @@ async def handle_message(group_id: str, sender_name: str, sender_number: str, te
 
     text = text.strip()
     lower = text.lower()
+
+    # ── Master group ──────────────────────────────────────────────────────────
+    # The director's view across every tunnel group. Checked first: nothing
+    # said here is ever filed as a site log or a tunnel update.
+    if group_id in settings.master_group_ids:
+        await handle_master_message(group_id, sender_name, sender_number, text)
+        return
 
     # ── Tunnel groups ─────────────────────────────────────────────────────────
     # Decided once, on the JID, before anything else runs. A tunnel group's

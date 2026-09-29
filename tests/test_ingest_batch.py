@@ -83,9 +83,9 @@ def world(monkeypatch):
     """A fake inbox and database; records every write and every message sent."""
     w = {"pending": [], "logs": [], "panels": [], "marks": {}, "sent": [], "cutoff": "unset"}
 
-    def pending(cutoff=None, group_id=None):
+    def pending(cutoff=None, group_ids=None):
         w["cutoff"] = cutoff
-        return [p for p in w["pending"] if group_id is None or p["group_id"] == group_id]
+        return [p for p in w["pending"] if group_ids is None or p["group_id"] in group_ids]
 
     async def send(group_id, text):
         w["sent"].append((group_id, text))

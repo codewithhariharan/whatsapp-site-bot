@@ -104,13 +104,13 @@ The linked-device session lives in the `baileys_auth` volume, so it survives reb
 
 Bare `/excel` is flat rather than pivoted on purpose. The monthly layout puts locations down the side and dates across the top, which does not survive the full range: the history holds roughly 6,100 distinct main locations over 1,500 days, so a full-range pivot would be 214 weekly sheets thousands of rows deep. A named month keeps the pivot, where the location axis stays in the hundreds.
 
-The whole-history export takes 30–100 seconds to build and the bot sends no progress message — it goes quiet, then the file arrives.
+The whole-history export takes 30–100 seconds to build; the bot says "⏳ Generating…" first so the wait is visible.
 
 ## How Engineers Log Updates
 
 Engineers just send their captions normally. The bot does not reply to each post: posts are held in `pending_messages` and logged in one pass at 00:00, 06:00, 12:00 and 18:00 Singapore time (`ingest_batch.py`). After each run the bot posts a single message listing any posts it could not log, so they can be resent; a run where everything logged stays silent. A post is filed under the day it arrived, not the day the run happened, so the midnight run does not move the evening's posts onto the next day.
 
-Commands and `/ask` still answer immediately. Two consequences of batching: `/daily`, `/excel` and `/ask` only see posts up to the last run, and a plain question typed without `/ask` in a site group is no longer answered — use `/ask`.
+Commands and `/ask` still answer immediately, and `/ask` first files the group's waiting posts so its answer is current. `/daily` and `/excel` see posts up to the last run. A plain question typed without `/ask` in a site group is not answered — use `/ask`.
 
 ```
 Main Location: Zone 3, S2-2
@@ -120,6 +120,36 @@ Manpower: Worker – 1
 ```
 
 That header is **not** required. Two locations are the norm — the first is the main location (the broad area), the second the sub location (the detail within it) — but a message naming a single location (`Zone 1 P4: FBCM materials fabrication`) is logged with that as the main location and a blank sub location, and a message naming none is still logged, under `Unknown`. Missing manpower is not disqualifying; it is absent from essentially the entire history. Only genuine chatter — greetings, "noted", leave notices — is ignored.
+
+## Tunnel groups
+
+Each tunnel contract has its own WhatsApp group (`TUNNEL_GROUP_IDS`), and every one sends the same template:
+
+```
+TUNNEL PROGRESS UPDATE
+CONTRACT: CR146
+DATE: 04-JAN-2026
+DRIVE: EB - Main Drive 3
+PROGRESS: 0 / 225 / 888 (25.3%)
+TBM LOCATION: at side table of AMK Ave 3
+INSTRUMENTATION: LG3053 breached AL
+ISSUES: [shift change]
+```
+
+It is parsed by rules, not a model (`tunnel_parser.py`), into `tunnel_progress` — one row per contract, report date and drive; a resend replaces it. `PROGRESS` is rings built that day / current ring / total rings (% as written). An update that cannot be read is listed in the run's failure message so it can be resent.
+
+Any line containing a `!` — in an update or any other message in a tunnel group — is stored word for word in `tunnel_flags`, under the day it was sent.
+
+The **master group** (`MASTER_GROUP_IDS`) holds the senior group director and the bot:
+
+| Command                     | Description                                                  |
+| --------------------------- | ------------------------------------------------------------ |
+| `/!!`                       | Today's `!` items from every contract, grouped by contract    |
+| `/!! yesterday`, `/!! 28 Sep`, `/!! monday` | Another day's                                 |
+| any other message           | Answered as a question across every contract                 |
+| `/excel`                    | Every contract's updates and `!` items as a spreadsheet       |
+
+`/!!` and questions first file any waiting posts from the tunnel groups, so they are current. In a contract's own group, `/!!`, `/ask` and `/excel` cover that contract only.
 
 ## Backfilling history
 

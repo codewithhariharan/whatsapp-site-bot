@@ -35,9 +35,19 @@ class Settings(BaseSettings):
     # the tunnel table.
     TUNNEL_GROUP_IDS: str = ""
 
+    # The master group: the senior group director and the bot. It sends no
+    # updates; it asks across EVERY tunnel group — /!! for the day's "!" items,
+    # and any other message as a question. Comma-separated JIDs, by JID for the
+    # same reason as above. Empty means there is no master group.
+    MASTER_GROUP_IDS: str = ""
+
     @property
     def tunnel_group_ids(self) -> set[str]:
         return {g.strip() for g in self.TUNNEL_GROUP_IDS.split(",") if g.strip()}
+
+    @property
+    def master_group_ids(self) -> set[str]:
+        return {g.strip() for g in self.MASTER_GROUP_IDS.split(",") if g.strip()}
 
     class Config:
         env_file = ".env"
