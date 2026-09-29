@@ -114,9 +114,6 @@ CRITICAL FACTS — ignoring these produces wrong answers:
 * For TIME-OF-DAY questions ("between 12pm and 6pm", "this morning", "after
   lunch") filter on logged_at in site time:
       (logged_at AT TIME ZONE 'Asia/Singapore')::time >= '12:00'
-  Rows filed from 2026-09-25 to 2026-09-29 may carry the time they were filed
-  instead of the time they were sent, so for those days also say the times are
-  approximate.
 
 * The same location often has SEVERAL entries on one day — engineers visit
   site twice a day, so "casting in progress" at 10:00 and "casting completed"
