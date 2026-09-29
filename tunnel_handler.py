@@ -98,11 +98,13 @@ def _looks_like_question(text: str) -> bool:
 
 async def handle_tunnel_ask(group_id: str, question: str):
     from tunnel_ai import answer_tunnel_query
+    from ingest_batch import catch_up
 
     if not question.strip():
         await send_message(group_id, "⚠️ Usage: /ask your question here")
         return
     await send_message(group_id, "🔍 Searching...")
+    await catch_up(group_id)       # file posts sent since the last slot
 
     try:
         answer = await asyncio.to_thread(answer_tunnel_query, group_id, question)

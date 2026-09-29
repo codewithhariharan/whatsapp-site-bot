@@ -304,3 +304,33 @@ class TestExtractJsonTolerance:
     def test_unbalanced_object_raises(self):
         with pytest.raises(json.JSONDecodeError):
             ai_handler._extract_json('{"sql": "SELECT 1"')
+
+
+class TestAnswerLayout:
+    def _prompt(self):
+        sent = {}
+
+        def fake_generate(prompt, **kwargs):
+            sent["prompt"] = prompt
+            return "answer"
+
+        with patch.object(ai_handler, "_run_sql_path", return_value=("RESULT", False, 5)), \
+             patch.object(ai_handler.llm, "generate", side_effect=fake_generate):
+            ai_handler.answer_query("G", "what was cast yesterday?")
+        return sent["prompt"]
+
+    def test_lists_are_grouped_by_location(self):
+        prompt = self._prompt()
+        assert "group them" in prompt and "by location" in prompt
+        assert "One *bold heading* per main location" in prompt
+
+    def test_the_latest_entry_wins(self):
+        assert "report the LATEST" in self._prompt()
+
+
+class TestSqlPromptForTimeAndConflicts:
+    def test_time_of_day_uses_site_time(self):
+        assert "AT TIME ZONE 'Asia/Singapore'" in ai_handler._SCHEMA
+
+    def test_rows_carry_logged_at_so_the_latest_can_win(self):
+        assert "include logged_at" in ai_handler._SCHEMA

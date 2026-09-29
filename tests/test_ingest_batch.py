@@ -83,9 +83,9 @@ def world(monkeypatch):
     """A fake inbox and database; records every write and every message sent."""
     w = {"pending": [], "logs": [], "panels": [], "marks": {}, "sent": [], "cutoff": "unset"}
 
-    def pending(cutoff=None):
+    def pending(cutoff=None, group_id=None):
         w["cutoff"] = cutoff
-        return list(w["pending"])
+        return [p for p in w["pending"] if group_id is None or p["group_id"] == group_id]
 
     async def send(group_id, text):
         w["sent"].append((group_id, text))
@@ -291,3 +291,78 @@ class TestReport:
         text = ib.failure_report([row])
         assert "_Zone 3 works_" in text
         assert "6591234567" in text   # falls back to the number with no name
+
+
+# ── Arrival time and order ────────────────────────────────────────────────────
+
+class TestArrival:
+    def test_logged_at_is_when_the_post_was_sent(self, world, monkeypatch):
+        # "What happened between 12 and 6?" reads logged_at; the run's own
+        # clock would put every post at the slot time.
+        post(world, "a", sgt(2026, 9, 25, 14, 5))
+        parses_as(monkeypatch, {"a": LOG})
+        asyncio.run(ib.run_batch())
+        assert world["logs"][0]["logged_at"] == sgt(2026, 9, 25, 14, 5)
+
+    def test_posts_are_written_oldest_first_even_when_parsed_together(
+            self, world, monkeypatch):
+        # The oldest post parses slowest here; it must still be written first,
+        # so a later correction lands after it and reads as the latest.
+        import time
+
+        def classify(text):
+            if text == "first":
+                time.sleep(0.2)
+            return {"type": "log", "data": {"main_location": text}}
+
+        monkeypatch.setattr(ib, "classify_and_parse", classify)
+        post(world, "first", sgt(2026, 9, 25, 9))
+        post(world, "second", sgt(2026, 9, 25, 10))
+        asyncio.run(ib.run_batch())
+        assert [l["main_location"] for l in world["logs"]] == ["first", "second"]
+
+
+# ── /ask catches up first ─────────────────────────────────────────────────────
+
+class TestCatchUp:
+    def test_only_the_asking_groups_posts_are_filed(self, world, monkeypatch):
+        post(world, "mine", sgt(2026, 9, 25, 14), group_id=SITE_GROUP)
+        post(world, "theirs", sgt(2026, 9, 25, 14), group_id=OTHER_GROUP)
+        parses_as(monkeypatch, {"mine": LOG, "theirs": LOG})
+        asyncio.run(ib.catch_up(SITE_GROUP))
+        assert world["marks"] == {1: "logged"}
+
+    def test_it_files_posts_sent_after_the_last_slot(self, world, monkeypatch):
+        # No cutoff: a 16:00 question sees the 15:59 post.
+        post(world, "a", sgt(2026, 9, 25, 15, 59))
+        parses_as(monkeypatch, {"a": LOG})
+        asyncio.run(ib.catch_up(SITE_GROUP))
+        assert world["cutoff"] is None
+        assert world["marks"] == {1: "logged"}
+
+    def test_a_failed_catch_up_does_not_raise(self, monkeypatch):
+        def broken(*_a, **_k):
+            raise RuntimeError("database down")
+        monkeypatch.setattr(db, "get_pending_messages", broken)
+        asyncio.run(ib.catch_up(SITE_GROUP))      # no exception
+
+    def test_ask_files_pending_posts_before_answering(self, monkeypatch):
+        import ai_handler
+        import commands as cmd
+        order = []
+
+        async def catch_up(group_id):
+            order.append(("catch_up", group_id))
+
+        def answer(group_id, question):
+            order.append(("answer", question))
+            return "ok"
+
+        async def send(group_id, text):
+            pass
+
+        monkeypatch.setattr(ib, "catch_up", catch_up)
+        monkeypatch.setattr(ai_handler, "answer_query", answer)
+        monkeypatch.setattr(cmd, "send_message", send)
+        asyncio.run(cmd.handle_ask(SITE_GROUP, "what happened today?"))
+        assert order == [("catch_up", SITE_GROUP), ("answer", "what happened today?")]

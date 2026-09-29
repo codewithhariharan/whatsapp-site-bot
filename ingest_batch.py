@@ -6,7 +6,9 @@ post in pending_messages, and this module drains that inbox at 00:00, 06:00,
 dwall_panels or tunnel_updates, and then posting ONE message per group listing
 the posts it could not log. A run where everything logged says nothing.
 
-Commands and questions are not batched; they still answer immediately.
+Commands and questions are not batched; they still answer immediately. An /ask
+first runs `catch_up()` for its group, so the answer includes posts sent since
+the last slot.
 
 Two things this has to get right that real-time logging got for free:
 
@@ -21,7 +23,7 @@ Two things this has to get right that real-time logging got for free:
 import asyncio
 import logging
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 import database as db
 from config import settings
@@ -39,6 +41,10 @@ SLOT_HOURS = (0, 6, 12, 18)
 # llm.is_transient() picks the errors worth waiting out; anything else fails
 # the post at once.
 _RETRY_DELAYS = (5, 30)
+
+# Posts parsed at once. The on-demand catch-up keeps someone waiting on /ask,
+# and six hours of posts parsed one by one would take minutes.
+_PARSE_CONCURRENCY = 6
 
 # One run at a time: the startup catch-up and a scheduled slot must not both
 # pick up the same pending rows.
@@ -73,6 +79,10 @@ def _received(row: dict) -> datetime:
 
 
 # ── Processing one post ───────────────────────────────────────────────────────
+#
+# Split in two. Parsing is a model call and takes seconds, so a run parses
+# several posts at once; writing is applied one post at a time, oldest first,
+# so a later post still lands after — and wins over — an earlier one.
 
 async def _call_with_retry(fn, *args):
     for delay in (*_RETRY_DELAYS, None):
@@ -85,18 +95,33 @@ async def _call_with_retry(fn, *args):
             await asyncio.sleep(delay)
 
 
-async def _log_site_post(row: dict, received_on: date) -> str:
-    parsed = await _call_with_retry(classify_and_parse, row["text"])
+def _is_tunnel(row: dict) -> bool:
+    return row["group_id"] in settings.tunnel_group_ids
+
+
+async def _parse(row: dict):
+    if _is_tunnel(row):
+        received_on = _received(row).date()
+        return await _call_with_retry(parse_tunnel_update, row["text"], received_on)
+    return await _call_with_retry(classify_and_parse, row["text"])
+
+
+async def _write_site_post(row: dict, parsed: dict) -> str:
     msg_type = parsed.get("type")
     group_id = row["group_id"]
 
     if msg_type == "log":
         data = parsed.get("data", {})
+        received = _received(row)
         await asyncio.to_thread(db.upsert_group, group_id)
         await asyncio.to_thread(
             db.insert_log,
             group_id=group_id,
-            log_date=received_on,
+            log_date=received.date(),
+            # The time the post was SENT, not the time this run filed it.
+            # "What happened between 12 and 6?" is answered from this, and so
+            # is which of two conflicting posts is the latest.
+            logged_at=received,
             sender_name=row["sender_name"],
             sender_number=row["sender_number"],
             main_location=data.get("main_location", "Unknown"),
@@ -118,8 +143,7 @@ async def _log_site_post(row: dict, received_on: date) -> str:
     return "skipped"
 
 
-async def _log_tunnel_post(row: dict, received_on: date) -> str:
-    update = await _call_with_retry(parse_tunnel_update, row["text"], received_on)
+async def _write_tunnel_post(row: dict, update: dict | None) -> str:
     if not update:
         return "skipped"  # looked like an update, but isn't one
 
@@ -132,33 +156,50 @@ async def _log_tunnel_post(row: dict, received_on: date) -> str:
     return "logged"
 
 
-async def _process(row: dict) -> str:
-    received_on = _received(row).date()
-    if row["group_id"] in settings.tunnel_group_ids:
-        return await _log_tunnel_post(row, received_on)
-    return await _log_site_post(row, received_on)
+async def _write(row: dict, parsed) -> str:
+    if _is_tunnel(row):
+        return await _write_tunnel_post(row, parsed)
+    return await _write_site_post(row, parsed)
 
 
 # ── A run ─────────────────────────────────────────────────────────────────────
 
-async def run_batch(cutoff: datetime | None = None, label: str | None = None) -> dict:
+async def run_batch(cutoff: datetime | None = None, label: str | None = None,
+                    group_id: str | None = None) -> dict:
     """Log every post received before `cutoff`, then report the failures.
+
+    `group_id` limits the run to one group's posts — that is the /ask catch-up,
+    which only needs the asker's group to be current.
 
     Returns {group_id: [failed rows]} — mostly for the tests.
     """
     async with _run_lock:
-        rows = await asyncio.to_thread(db.get_pending_messages, cutoff)
+        rows = await asyncio.to_thread(db.get_pending_messages, cutoff, group_id)
         if not rows:
             return {}
 
+        gate = asyncio.Semaphore(_PARSE_CONCURRENCY)
+
+        async def parse(row):
+            async with gate:
+                try:
+                    return await _parse(row), None
+                except Exception as exc:
+                    return None, exc
+
+        parsed_rows = await asyncio.gather(*(parse(row) for row in rows))
+
         failed = defaultdict(list)
         counts = defaultdict(int)
-        for row in rows:
+        for row, (parsed, parse_error) in zip(rows, parsed_rows):
             try:
-                status = await _process(row)
+                if parse_error is not None:
+                    raise parse_error
+                status = await _write(row, parsed)
                 error = None
             except Exception as exc:
-                logger.exception("batch: could not log message %s", row["id"])
+                logger.error("batch: could not log message %s", row["id"],
+                             exc_info=exc)
                 status, error = "failed", f"{type(exc).__name__}: {exc}"[:500]
                 failed[row["group_id"]].append(row)
             counts[status] += 1
@@ -166,13 +207,30 @@ async def run_batch(cutoff: datetime | None = None, label: str | None = None) ->
 
         logger.info("batch %s: %s", label or "run", dict(counts))
 
-        for group_id, bad in failed.items():
+        for gid, bad in failed.items():
             try:
-                await send_message(group_id, failure_report(bad, label))
+                await send_message(gid, failure_report(bad, label))
             except Exception:
-                logger.exception("batch: could not post failure report to %s", group_id)
+                logger.exception("batch: could not post failure report to %s", gid)
 
         return dict(failed)
+
+
+async def catch_up(group_id: str) -> None:
+    """Log a group's waiting posts now, so /ask answers from them.
+
+    Posts otherwise wait for the next slot, so a question at 16:00 about "this
+    afternoon" would be answered from a record that stops at 12:00. The
+    scheduled runs carry on as before; they just find less waiting.
+
+    Never raises: if the catch-up fails, /ask answers from what is already
+    filed — a slightly stale answer beats none, and the posts stay pending for
+    the next run.
+    """
+    try:
+        await run_batch(label="on-demand", group_id=group_id)
+    except Exception:
+        logger.exception("catch-up for %s failed; answering from filed data", group_id)
 
 
 def failure_report(rows: list[dict], label: str | None = None) -> str:

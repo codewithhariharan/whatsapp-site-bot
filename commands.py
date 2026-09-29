@@ -371,10 +371,12 @@ async def handle_delete(group_id: str, args: str):
 
 async def handle_ask(group_id: str, question: str):
     from ai_handler import answer_query
+    from ingest_batch import catch_up
     if not question.strip():
         await send_message(group_id, "⚠️ Usage: /ask your question here")
         return
     await send_message(group_id, "🔍 Searching...")
+    await catch_up(group_id)       # file posts sent since the last slot
 
     try:
         # answer_query is synchronous — psycopg and the Gemini client both

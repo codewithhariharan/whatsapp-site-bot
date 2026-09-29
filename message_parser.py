@@ -15,8 +15,8 @@ def classify_and_parse(message: str) -> dict:
 
 Classify this message into one of these types and extract relevant data:
 
-1. "log" - A daily site progress update: any message describing work done, in
-   progress, or planned somewhere on site.
+1. "log" - A daily site progress update: a message REPORTING work done, in
+   progress, or planned at a place on this site.
    Example: "Main Location: Zone 3, S2-2\\nSub Location: GL A-B/20\\nDescription: Honeycomb rectification works\\nManpower: Worker - 1"
    Extract: main_location, sub_location, description, manpower
 
@@ -32,6 +32,17 @@ Classify this message into one of these types and extract relevant data:
        leave sub_location as "". Never duplicate the same location into both.
      - No location is stated at all: use "Unknown" for main_location. Still a log.
      - No manpower stated: use "". Still a log.
+   How to split a location — only GRID LINES go to sub_location:
+     - A zone or structure followed by a grid line (GL...) splits:
+       "U3 GL10-14 (South side)" -> main_location "U3",
+       sub_location "GL10-14 (South side)". The same when the grid lines are
+       on their own line under the area: "CCW (Centre area)" then
+       "GL-W4 to W5" -> main_location "CCW (Centre area)",
+       sub_location "GL-W4 to W5".
+     - Everything else stays WHOLE in main_location, sub_location "":
+       a zone with a pile, panel or point ("Zone 4 P51"), a column
+       ("U3 Column C03-1 (U3-33)"), or several identifiers listed together
+       ("U3-35, U3-37").
    The location is whatever place the message is about — a zone, a shaft, a grid
    line, a chainage, a panel, a level, a structure name. Take it from anywhere in
    the message, not just a "Main Location:" label.
@@ -58,10 +69,20 @@ Classify this message into one of these types and extract relevant data:
 3. "query" - A question about historical data. Examples: "When was Panel 39 cast?", "What happened at CCW1 last Monday?"
    Extract: the full question as "query"
 
-4. "ignore" - ONLY general chat with no site content: greetings, thanks,
-   acknowledgements ("ok", "noted"), logistics about people ("I'm on leave"),
-   and anything unrelated to the project. When a message mentions site work at
-   all, prefer "log" over "ignore" — a sparse log is better than a lost one.
+4. "ignore" - Anything that does not REPORT work at a place on this site:
+   - general chat: greetings, thanks, acknowledgements ("ok", "noted"),
+     logistics about people ("I'm on leave"), anything unrelated to the project
+   - safety notices, reminders, circulars and incident alerts, even though they
+     talk about site work: "Please conduct a safety time-out", "There have been
+     a few cases of finger injuries from lifting works", "A worker fell on one
+     of our projects today", toolbox-talk or PPE reminders, messages forwarded
+     from the client or main contractor ("Above message from GDCRL")
+   - instructions and announcements to the group that do not say what work
+     was done, is ongoing or is planned somewhere
+   A log answers "what work, where". A notice tells people how to behave; it is
+   "ignore" however much site vocabulary it uses. Otherwise, when a message
+   does report work, prefer "log" over "ignore" — a sparse log is better than
+   a lost one.
 
 Message:
 \"\"\"{message}\"\"\"
@@ -74,6 +95,9 @@ For a log:
 For a log naming only one location ("Rebar fixing at Shaft B, 4 workers"):
 {{"type": "log", "data": {{"main_location": "Shaft B", "sub_location": "", "description": "Rebar fixing", "manpower": "Worker - 4"}}}}
 
+For a log whose location is a zone plus a grid line ("U3 GL10-14 (South side): Platform slab works ongoing"):
+{{"type": "log", "data": {{"main_location": "U3", "sub_location": "GL10-14 (South side)", "description": "Platform slab works ongoing", "manpower": ""}}}}
+
 For a log with no location at all ("Concrete pour completed today"):
 {{"type": "log", "data": {{"main_location": "Unknown", "sub_location": "", "description": "Concrete pour completed", "manpower": ""}}}}
 
@@ -83,7 +107,7 @@ For a dwall entry:
 For a query:
 {{"type": "query", "query": "When was Panel 39 cast?"}}
 
-For ignore:
+For ignore (chat, or a safety notice like "Please conduct a safety time-out with your workers today"):
 {{"type": "ignore"}}"""
 
     text = llm.generate(

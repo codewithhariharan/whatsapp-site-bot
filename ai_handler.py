@@ -56,7 +56,7 @@ _MAX_PANEL_ROWS = 25
 # otherwise produce confidently wrong SQL.
 _SCHEMA = """TABLE daily_logs  -- ~40,000 rows, one per site update message
     log_date       DATE          the day the work happened  (indexed with group_id)
-    logged_at      TIMESTAMPTZ   when the message arrived (UTC; site is UTC+8)
+    logged_at      TIMESTAMPTZ   when the message was SENT (site time is Asia/Singapore)
     sender_name    TEXT          engineer who sent it
     main_location  TEXT NOT NULL broad area: 'Zone 3', 'Zone 4 P46', 'CCW2'
     sub_location   TEXT          detail within it: 'P32', 'GL A-B/20'; often ''
@@ -108,7 +108,20 @@ CRITICAL FACTS — ignoring these produces wrong answers:
       to_date(substring(casting_start from '\\((\\d{2}/\\d{2}/\\d{2})\\)'), 'DD/MM/YY')
   Ordering these columns as plain text gives the wrong answer.
 
-* log_date is the reliable date for daily_logs. Prefer it over logged_at."""
+* log_date is the reliable date for daily_logs. Prefer it over logged_at for
+  "which day" questions.
+
+* For TIME-OF-DAY questions ("between 12pm and 6pm", "this morning", "after
+  lunch") filter on logged_at in site time:
+      (logged_at AT TIME ZONE 'Asia/Singapore')::time >= '12:00'
+  Rows filed from 2026-09-25 to 2026-09-29 may carry the time they were filed
+  instead of the time they were sent, so for those days also say the times are
+  approximate.
+
+* The same location can have SEVERAL entries on one day when an engineer posts
+  an update or a correction. The LATEST one (highest logged_at) is the current
+  state. Whenever you return log rows, include logged_at, so the answer can
+  prefer the latest."""
 
 
 _SQL_SYSTEM = """You write ONE PostgreSQL SELECT that answers a question about a construction
@@ -130,8 +143,9 @@ RULES
 4. Include the columns needed to make the answer readable — if you count by
    zone, return the zone name alongside the count.
 5. When the question asks *what happened* somewhere, returning the matching
-   log rows (log_date, main_location, sub_location, description) is right —
-   just bound it with a sensible LIMIT.
+   log rows (log_date, logged_at, main_location, sub_location, description) is
+   right — ordered by main_location, then logged_at, and bounded with a
+   sensible LIMIT.
 6. If the question cannot be answered with SQL because it depends on the
    nuance of free-text wording rather than on counting or filtering, return
    {"sql": null, "keywords": ["..."]} and a keyword search will run instead.
@@ -151,7 +165,13 @@ EXAMPLES
 {"sql": "SELECT panel_number, casting_start, casting_end FROM dwall_panels WHERE group_id = current_setting('app.group_id') AND casting_start IS NOT NULL AND casting_start <> '' ORDER BY to_date(substring(casting_start from '\\((\\d{2}/\\d{2}/\\d{2})\\)'), 'DD/MM/YY') LIMIT 3", "reasoning": "parse DD/MM/YY out of the text stage time"}
 
 "what were the activities today?"   (if the user turn said today is 2026-09-04)
-{"sql": "SELECT main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND log_date = '2026-09-04' ORDER BY main_location LIMIT 200", "reasoning": "one day's rows; take the date from the user turn, never from this example"}
+{"sql": "SELECT logged_at, main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND log_date = '2026-09-04' ORDER BY main_location, logged_at LIMIT 200", "reasoning": "one day's rows; take the date from the user turn, never from this example"}
+
+"what happened between 12pm and 6pm today?"   (if the user turn said today is 2026-09-04)
+{"sql": "SELECT logged_at, main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND log_date = '2026-09-04' AND (logged_at AT TIME ZONE 'Asia/Singapore')::time >= '12:00' AND (logged_at AT TIME ZONE 'Asia/Singapore')::time < '18:00' ORDER BY main_location, logged_at LIMIT 200", "reasoning": "time-of-day window on logged_at in site time"}
+
+"what was cast yesterday?"   (if the user turn said today is 2026-09-04)
+{"sql": "SELECT logged_at, main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND log_date = '2026-09-03' AND (description ILIKE '%cast%' OR raw_message ILIKE '%cast%' OR description ILIKE '%concret%' OR description ILIKE '%pour%') ORDER BY main_location, logged_at LIMIT 200", "reasoning": "casting is free text; match its common wordings"}
 
 "when was U3-38 cast?"
 {"sql": "SELECT log_date, main_location, sub_location, description FROM daily_logs WHERE group_id = current_setting('app.group_id') AND (main_location ILIKE '%U3-38%' OR sub_location ILIKE '%U3-38%' OR raw_message ILIKE '%U3-38%') AND (description ILIKE '%cast%' OR raw_message ILIKE '%cast%') ORDER BY log_date LIMIT 10", "reasoning": "U3-38 is not a CN D-Wall panel, so casting lives in daily_logs free text"}
@@ -374,6 +394,36 @@ The answer is sent straight into a WhatsApp group, which does not render
 Markdown. Use WhatsApp formatting only: *single asterisks* for bold, and "•" or
 "-" for bullets. Never use #, ##, or ** — they appear literally as punctuation
 in the message. Keep it short enough to read on a phone.
+
+STRUCTURE. When the answer lists activities or entries — "what was cast
+yesterday", "what happened today", "activities between 12 and 6" — group them
+by location so it reads at a glance:
+
+*Activities on 3 Sep 2026*
+
+*U3*
+• GL10-14 (South side) — platform slab works ongoing
+• GL21-24 (South side) — wall formwork installed
+
+*Zone 3*
+• S2-2 — honeycomb rectification
+
+Rules for that layout:
+- Start with one line saying what the list is and the date or time window.
+- One *bold heading* per main location; entries with the same zone or
+  structure prefix go under the same heading (put "U3" and "U3 GL10-14" both
+  under *U3*). Order the headings alphabetically, numbers in numeric order.
+- One bullet per activity: the sub-location (or panel, grid line, level), a
+  dash, then what was done. Leave out the sub-location when there is none.
+- Merge duplicates: when several entries describe the same work at the same
+  place, write it once.
+- A single number, date or fact is answered in one line, with no headings.
+
+LATEST WINS. The same place can have several entries when an engineer posts an
+update or a correction. When they disagree — "casting in progress" at 10:00
+and "casting completed" at 15:00 — report the LATEST (highest logged_at) as
+the current state. Mention the earlier one only if the change itself matters
+to the question.
 
 {provenance}
 

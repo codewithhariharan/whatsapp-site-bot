@@ -72,7 +72,7 @@ def queued(monkeypatch):
         })
 
     monkeypatch.setattr(db, "enqueue_message", enqueue)
-    monkeypatch.setattr(db, "get_pending_messages", lambda cutoff=None: list(rows))
+    monkeypatch.setattr(db, "get_pending_messages", lambda cutoff=None, group_id=None: list(rows))
     monkeypatch.setattr(db, "mark_message", lambda *a, **k: None)
     return rows
 

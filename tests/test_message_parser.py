@@ -45,3 +45,17 @@ def test_parses_dwall_entry(fake_model):
     result = mp.classify_and_parse("Ent-2 - Panel No. CN284A")
     assert result["type"] == "dwall"
     assert result["data"]["panel_number"] == "CN284A"
+
+
+def test_the_prompt_rules_out_safety_notices(monkeypatch):
+    # Gemini filed three safety circulars as logs in the first comparison run.
+    seen = {}
+
+    def fake_generate(prompt, **kwargs):
+        seen["prompt"] = prompt
+        return '{"type": "ignore"}'
+
+    monkeypatch.setattr(mp.llm, "generate", fake_generate)
+    mp.classify_and_parse("Please conduct a safety time-out")
+    assert "safety notices" in seen["prompt"]
+    assert '"U3 GL10-14 (South side)" -> main_location "U3"' in seen["prompt"]

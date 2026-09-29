@@ -106,21 +106,22 @@ def enqueue_message(group_id: str, sender_name: str, sender_number: str, text: s
     )
 
 
-def get_pending_messages(received_before: datetime | None = None) -> list[dict]:
-    """Every post still waiting, oldest first.
+def get_pending_messages(received_before: datetime | None = None,
+                         group_id: str | None = None) -> list[dict]:
+    """Every post still waiting, oldest first; optionally one group's only.
 
     Oldest first matters: a tunnel resend replaces the earlier row for the same
     day, so the later message has to be applied last to win.
     """
-    if received_before is None:
-        return _fetch(
-            "SELECT * FROM pending_messages WHERE status = 'pending' "
-            "ORDER BY received_at, id"
-        )
     return _fetch(
-        "SELECT * FROM pending_messages WHERE status = 'pending' "
-        "AND received_at < %s ORDER BY received_at, id",
-        (received_before,),
+        """
+        SELECT * FROM pending_messages
+        WHERE status = 'pending'
+          AND (%s::timestamptz IS NULL OR received_at < %s)
+          AND (%s::text IS NULL OR group_id = %s)
+        ORDER BY received_at, id
+        """,
+        (received_before, received_before, group_id, group_id),
     )
 
 
@@ -181,18 +182,21 @@ def insert_log(
     description: str,
     manpower: str,
     raw_message: str,
+    logged_at: datetime | None = None,
 ):
+    """`logged_at` is when the post was sent; None means now."""
     _execute(
         """
         INSERT INTO daily_logs (
-            group_id, log_date, sender_name, sender_number,
+            group_id, log_date, logged_at, sender_name, sender_number,
             main_location, sub_location, description, manpower, raw_message
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, COALESCE(%s, NOW()), %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             group_id,
             log_date,
+            logged_at,
             sender_name,
             sender_number,
             main_location,
