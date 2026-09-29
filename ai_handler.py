@@ -24,27 +24,22 @@ import json
 import logging
 from datetime import date
 
-import anthropic
-
-from config import settings
+import llm
 from sitetime import site_today
 import database as db
 
 logger = logging.getLogger("site_bot")
 
-client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-
-_SQL_MODEL = "claude-sonnet-4-6"      # writes the query; needs real capability
+_SQL_MODEL = llm.SMART_MODEL          # writes the query; needs real capability
 
 # The answering call is the slow half — latency tracks output length almost
-# exactly (a 500-token day report takes ~8s on Sonnet, ~3.6s on Haiku), and the
-# database itself contributes under 100ms. Most questions come back as a count
-# or a handful of rows, which is rendering work rather than reasoning, so Haiku
-# answers those at roughly a third of the cost and half the latency with no
-# measured loss. Long row listings are different: they need grouping into a
-# readable shape, and Haiku flattens them, so those stay on Sonnet.
-_ANSWER_MODEL_SMALL = "claude-haiku-4-5-20251001"
-_ANSWER_MODEL_LARGE = "claude-sonnet-4-6"
+# exactly, and the database itself contributes under 100ms. Most questions come
+# back as a count or a handful of rows, which is rendering work rather than
+# reasoning, so the fast model answers those. Long row listings are different:
+# they need grouping into a readable shape, which the fast model tends to
+# flatten, so those go to the smart one.
+_ANSWER_MODEL_SMALL = llm.FAST_MODEL
+_ANSWER_MODEL_LARGE = llm.SMART_MODEL
 _SMALL_RESULT_ROWS = 20
 
 _QUERY_TIMEOUT_MS = 5000
@@ -214,11 +209,11 @@ def _write_sql(question: str, previous_error: str | None = None,
     """Ask the model for a query. On a retry, show it what Postgres said.
 
     The schema, rules and examples are ~1,800 tokens that never change, so they
-    live in a cached system prompt; only the date and the question travel in the
-    user turn. Caching is a prefix match, so anything volatile placed ahead of
-    the schema — the date used to be the prompt's first line — would invalidate
-    the whole thing on every call. Cached reads bill at a tenth of the rate, and
-    a retry re-reads the same prefix rather than paying for it twice.
+    live in the system instruction; only the date and the question travel in
+    the user turn. Gemini's implicit caching is a prefix match, so anything
+    volatile placed ahead of the schema — the date used to be the prompt's
+    first line — would invalidate it on every call, and a retry would pay for
+    the whole prefix twice.
     """
     user = f"Today is {site_today().isoformat()}.\n\nQuestion:\n\"\"\"{question}\"\"\""
     if previous_error:
@@ -227,17 +222,13 @@ def _write_sql(question: str, previous_error: str | None = None,
             f"Query:\n{previous_sql}\n\nPostgres said:\n{previous_error}"
         )
 
-    response = client.messages.create(
-        model=_SQL_MODEL,
+    reply = llm.generate(
+        user, model=_SQL_MODEL,
         max_tokens=400,          # a SELECT plus one line of reasoning
-        system=[{
-            "type": "text",
-            "text": _SQL_SYSTEM.replace("{schema}", _SCHEMA),
-            "cache_control": {"type": "ephemeral"},
-        }],
-        messages=[{"role": "user", "content": user}],
+        system=_SQL_SYSTEM.replace("{schema}", _SCHEMA),
+        json_output=True,
     )
-    return _extract_json(response.content[0].text)
+    return _extract_json(reply)
 
 
 def _run_sql_path(group_id: str, question: str) -> tuple[str, bool, int] | None:
@@ -346,7 +337,7 @@ def _keyword_fallback(group_id: str, question: str) -> str:
 def answer_query(group_id: str, question: str) -> str:
     """Answer a natural language question about the site record.
 
-    Synchronous: psycopg and the Anthropic client both block. Callers on the
+    Synchronous: psycopg and the Gemini client both block. Callers on the
     event loop must run this in a thread.
     """
     sql_result = _run_sql_path(group_id, question)
@@ -400,9 +391,4 @@ Question: {question}"""
 
     model = (_ANSWER_MODEL_SMALL if rows_shown <= _SMALL_RESULT_ROWS
              else _ANSWER_MODEL_LARGE)
-    response = client.messages.create(
-        model=model,
-        max_tokens=1500,
-        messages=[{"role": "user", "content": context}],
-    )
-    return response.content[0].text.strip()
+    return llm.generate(context, model=model, max_tokens=1500)

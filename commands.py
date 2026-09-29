@@ -377,7 +377,7 @@ async def handle_ask(group_id: str, question: str):
     await send_message(group_id, "🔍 Searching...")
 
     try:
-        # answer_query is synchronous — psycopg and the Anthropic client both
+        # answer_query is synchronous — psycopg and the Gemini client both
         # block — and takes seconds. Run it off the event loop, or the bot stops
         # logging everyone else's messages until it returns.
         answer = await asyncio.to_thread(answer_query, group_id, question)

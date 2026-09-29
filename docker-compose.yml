@@ -1,5 +1,5 @@
 # The full two-service stack. This is what runs in production too.
-#   api    — FastAPI ingest + business logic, Claude parsing, Excel export
+#   api    — FastAPI ingest + business logic, Gemini parsing, Excel export
 #   bridge — Baileys transport; the bot's only link to WhatsApp
 #
 # Neither port is published beyond 127.0.0.1. Nothing needs to reach this host

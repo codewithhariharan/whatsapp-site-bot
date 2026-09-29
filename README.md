@@ -1,10 +1,10 @@
 # WhatsApp Site Bot
 
-A WhatsApp bot that turns a construction site's group chat into a structured reporting system. Site engineers send progress updates as ordinary WhatsApp messages; the bot uses Claude to parse the free-form text into structured logs, stores them in a database, and generates daily summaries and Excel reports on demand — no app, no forms, and no training required for the people on site.
+A WhatsApp bot that turns a construction site's group chat into a structured reporting system. Site engineers send progress updates as ordinary WhatsApp messages; the bot uses Gemini to parse the free-form text into structured logs, stores them in a database, and generates daily summaries and Excel reports on demand — no app, no forms, and no training required for the people on site.
 
 ## Highlights
 
-- **Natural-language logging** — engineers write updates however they like; Claude extracts location, description and manpower into structured records. A message naming one location, or none, is still logged.
+- **Natural-language logging** — engineers write updates however they like; Gemini extracts location, description and manpower into structured records. A message naming one location, or none, is still logged.
 - **Conversational queries** — `/ask when was Panel 39 cast?` runs natural-language Q&A over the full site history.
 - **Automated reporting** — daily summaries, a whole-history export, per-month Excel workbooks, and a specialised D-Wall panel tracker.
 - **Single-group by design** — the bridge serves exactly one allowlisted group. See [Scope](#scope).
@@ -14,7 +14,7 @@ A WhatsApp bot that turns a construction site's group chat into a structured rep
 | Layer     | Technology                                                                    |
 | --------- | ----------------------------------------------------------------------------- |
 | Backend   | Python, FastAPI (async), Uvicorn                                              |
-| AI        | Anthropic Claude — `claude-haiku-4-5` (parsing), `claude-sonnet-4-6` (`/ask`) |
+| AI        | Google Gemini — `gemini-2.5-flash` via Vertex AI, no API key; set in `.env` |
 | Messaging | Baileys (Node) over WhatsApp Web                                              |
 | Data      | Cloud SQL for PostgreSQL 15, via psycopg                                      |
 | Reporting | openpyxl                                                                      |
@@ -29,7 +29,7 @@ WhatsApp group ──► Baileys bridge (Node) ──► /baileys/incoming (Fast
    │                          message_handler ──► commands (/daily, /excel, /ask …)
    │                                                │
    │                                                ▼
-   └──── whatsapp_client ◄──── message_parser ──► Claude  (parse free-text)
+   └──── whatsapp_client ◄──── message_parser ──► Gemini  (parse free-text)
                                                     │
                                                     ▼
                                         Cloud SQL for PostgreSQL
@@ -62,7 +62,7 @@ Put the connection string in `.env` as `DATABASE_URL`. On GCP, prefer a private 
 ### 2 — Configure
 
 ```bash
-cp .env.example .env                              # DATABASE_URL, ANTHROPIC_API_KEY, bridge secret
+cp .env.example .env                              # DATABASE_URL, GOOGLE_CLOUD_PROJECT, bridge secret
 cp baileys-bridge/.env.example baileys-bridge/.env # ingest URL, same secret, group allowlist
 ```
 

@@ -6,9 +6,8 @@ per run and only if something failed — so most of these assert on silence.
 import asyncio
 from datetime import date, datetime, timezone
 
-import anthropic
-import httpx
 import pytest
+from google.genai import errors
 
 import database as db
 import ingest_batch as ib
@@ -230,8 +229,7 @@ class TestRun:
 
 class TestRetry:
     def overloaded(self):
-        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-        return anthropic.APIConnectionError(request=request)
+        return errors.ServerError(503, {"error": {"message": "overloaded"}})
 
     def test_a_transient_model_error_is_retried(self, world, monkeypatch):
         monkeypatch.setattr(ib, "_RETRY_DELAYS", (0, 0))
@@ -261,6 +259,22 @@ class TestRetry:
         asyncio.run(ib.run_batch())
         assert world["marks"] == {1: "failed"}
         assert len(world["sent"]) == 1
+
+    def test_a_rejected_request_is_not_retried(self, world, monkeypatch):
+        # A 400 (bad key, bad model name) fails the same way every time;
+        # waiting it out only delays the whole run.
+        monkeypatch.setattr(ib, "_RETRY_DELAYS", (0, 0))
+        calls = []
+
+        def rejected(text):
+            calls.append(text)
+            raise errors.ClientError(400, {"error": {"message": "bad request"}})
+
+        monkeypatch.setattr(ib, "classify_and_parse", rejected)
+        post(world, "a", sgt(2026, 9, 25, 7))
+        asyncio.run(ib.run_batch())
+        assert len(calls) == 1
+        assert world["marks"] == {1: "failed"}
 
 
 class TestReport:

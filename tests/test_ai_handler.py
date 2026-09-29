@@ -15,16 +15,6 @@ import ai_handler
 import database as db
 
 
-def _reply(payload: str):
-    class Block:
-        type, text = "text", payload
-
-    class Response:
-        content = [Block()]
-
-    return Response()
-
-
 SCOPED = "SELECT COUNT(*) AS n FROM daily_logs WHERE group_id = current_setting('app.group_id')"
 
 
@@ -165,13 +155,13 @@ class TestAnswerQueryProvenance:
     def _run(self, sql_result):
         sent = {}
 
-        def fake_create(**kwargs):
-            sent["content"] = kwargs["messages"][0]["content"]
-            return _reply("answer")
+        def fake_generate(prompt, **kwargs):
+            sent["content"] = prompt
+            return "answer"
 
         with patch.object(ai_handler, "_run_sql_path", return_value=sql_result), \
              patch.object(ai_handler, "_keyword_fallback", return_value="KEYWORD DATA"), \
-             patch.object(ai_handler.client.messages, "create", side_effect=fake_create):
+             patch.object(ai_handler.llm, "generate", side_effect=fake_generate):
             answer = ai_handler.answer_query("G", "q")
         return answer, sent["content"]
 
@@ -222,14 +212,14 @@ class TestAnswerModelRouting:
     def _model_used_for(self, rows_shown, sql_result=True):
         picked = {}
 
-        def fake_create(**kwargs):
+        def fake_generate(prompt, **kwargs):
             picked["model"] = kwargs["model"]
-            return _reply("answer")
+            return "answer"
 
         result = ("RESULT", False, rows_shown) if sql_result else None
         with patch.object(ai_handler, "_run_sql_path", return_value=result), \
              patch.object(ai_handler, "_keyword_fallback", return_value="DATA"), \
-             patch.object(ai_handler.client.messages, "create", side_effect=fake_create):
+             patch.object(ai_handler.llm, "generate", side_effect=fake_generate):
             ai_handler.answer_query("G", "q")
         return picked["model"]
 
@@ -250,31 +240,31 @@ class TestAnswerModelRouting:
         assert self._model_used_for(0, sql_result=False) == ai_handler._ANSWER_MODEL_LARGE
 
 
-class TestPromptCaching:
-    def test_schema_is_sent_as_a_cached_system_prompt(self):
+class TestSqlPrompt:
+    def _sent_by_write_sql(self, question):
         sent = {}
 
-        def fake_create(**kwargs):
-            sent.update(kwargs)
-            return _reply('{"sql": null}')
+        def fake_generate(prompt, **kwargs):
+            sent.update(kwargs, prompt=prompt)
+            return '{"sql": null}'
 
-        with patch.object(ai_handler.client.messages, "create", side_effect=fake_create):
-            ai_handler._write_sql("how many entries?")
+        with patch.object(ai_handler.llm, "generate", side_effect=fake_generate):
+            ai_handler._write_sql(question)
+        return sent
 
-        system = sent["system"]
-        assert system[0]["cache_control"] == {"type": "ephemeral"}
-        assert "TABLE daily_logs" in system[0]["text"]
+    def test_schema_is_sent_as_a_stable_system_prefix(self):
+        sent = self._sent_by_write_sql("how many entries?")
+        assert "TABLE daily_logs" in sent["system"]
         # The date is volatile; if it were in the cached prefix every new day
         # would invalidate the cache, and worse, a stale date could be served.
-        assert "Today is" not in system[0]["text"]
-        assert "Today is" in sent["messages"][0]["content"]
+        assert "Today is" not in sent["system"]
+        assert "Today is" in sent["prompt"]
+
+    def test_sql_is_requested_as_json(self):
+        assert self._sent_by_write_sql("q")["json_output"] is True
 
     def test_schema_placeholder_is_rendered_not_literal(self):
-        sent = {}
-        with patch.object(ai_handler.client.messages, "create",
-                          side_effect=lambda **kw: (sent.update(kw), _reply('{"sql": null}'))[1]):
-            ai_handler._write_sql("q")
-        text = sent["system"][0]["text"]
+        text = self._sent_by_write_sql("q")["system"]
         assert "{schema}" not in text
         # .format() escapes are gone now that the prompt is not formatted.
         assert "{{" not in text and "}}" not in text

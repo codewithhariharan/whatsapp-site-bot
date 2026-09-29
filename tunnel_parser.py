@@ -24,7 +24,7 @@ Two things happen here, in this order:
      splitting on the section headers, pulling the exclamation block out,
      reading the date. These are exact rules; handing them to a model would
      only add a way for them to be wrong.
-  2. `parse_tunnel_update()` then asks Claude for the *numbers* inside those
+  2. `parse_tunnel_update()` then asks the model for the *numbers* inside those
      blocks, which is where the wording genuinely varies ("Total Disposed: 102
      loads /approx. 5.2 rings" versus "102 loads (5.2 rings)").
 
@@ -37,15 +37,9 @@ import logging
 import re
 from datetime import date, datetime
 
-import anthropic
-
-from config import settings
+import llm
 
 logger = logging.getLogger("site_bot")
-
-client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-
-_MODEL = "claude-haiku-4-5-20251001"
 
 # ── Section headers ───────────────────────────────────────────────────────────
 
@@ -314,17 +308,10 @@ def extract_numbers(known: dict[str, str]) -> dict:
     """Ask the model for the numbers inside the section blocks."""
     body = "\n\n".join(f"{k}:\n{v}" for k, v in known.items())
     try:
-        response = client.messages.create(
-            model=_MODEL,
-            max_tokens=800,
-            system=[{
-                "type": "text",
-                "text": _EXTRACT_SYSTEM,
-                "cache_control": {"type": "ephemeral"},
-            }],
-            messages=[{"role": "user", "content": body}],
+        raw = llm.generate(
+            body, model=llm.FAST_MODEL, max_tokens=800,
+            system=_EXTRACT_SYSTEM, json_output=True,
         )
-        raw = response.content[0].text.strip()
         raw = raw.replace("```json", "").replace("```", "").strip()
         return _coerce_numbers(json.loads(raw))
     except Exception:

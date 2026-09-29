@@ -1,8 +1,6 @@
 import json
-import anthropic
-from config import settings
 
-client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+import llm
 
 
 def classify_and_parse(message: str) -> dict:
@@ -88,12 +86,8 @@ For a query:
 For ignore:
 {{"type": "ignore"}}"""
 
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}],
+    text = llm.generate(
+        prompt, model=llm.FAST_MODEL, max_tokens=1000, json_output=True,
     )
-
-    text = response.content[0].text.strip()
     text = text.replace("```json", "").replace("```", "").strip()
     return json.loads(text)

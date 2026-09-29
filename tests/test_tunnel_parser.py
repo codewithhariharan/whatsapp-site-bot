@@ -199,7 +199,7 @@ def test_recognition_makes_no_model_call(monkeypatch):
     def explode(*_a, **_k):
         raise AssertionError("is_tunnel_update must not call the model")
 
-    monkeypatch.setattr(tp.client.messages, "create", explode)
+    monkeypatch.setattr(tp.llm, "generate", explode)
     assert tp.is_tunnel_update(SAMPLE) is True
     assert tp.is_tunnel_update("thanks") is False
 
@@ -240,7 +240,7 @@ def test_a_failed_extraction_still_stores_the_text(monkeypatch):
     def explode(*_a, **_k):
         raise RuntimeError("API down")
 
-    monkeypatch.setattr(tp.client.messages, "create", explode)
+    monkeypatch.setattr(tp.llm, "generate", explode)
     row = tp.parse_tunnel_update(SAMPLE, date(2026, 9, 6))
     assert row is not None
     assert row["contract"] == "P103"

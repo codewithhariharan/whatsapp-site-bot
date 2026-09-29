@@ -2,7 +2,19 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     DATABASE_URL: str
-    ANTHROPIC_API_KEY: str
+    # Gemini is reached through Vertex AI as the VM's service account — there
+    # is no API key. The SDK finds the credentials itself (Application Default
+    # Credentials, served by the GCE metadata server), so only the project and
+    # location are configuration.
+    GOOGLE_CLOUD_PROJECT: str
+    GOOGLE_CLOUD_LOCATION: str = "global"
+
+    # Model IDs, overridable from .env so a model retirement or an upgrade is a
+    # config change rather than a code change. FAST parses every post; SMART
+    # writes /ask's SQL and lays out long answers. The default is the model
+    # proven to answer from the VM; test a newer one before switching.
+    GEMINI_FAST_MODEL: str = "gemini-2.5-flash"
+    GEMINI_SMART_MODEL: str = "gemini-2.5-flash"
 
     # Baileys bridge (WhatsApp Web transport). This is the only transport —
     # the bot serves groups, and the Cloud API cannot do groups — so both of

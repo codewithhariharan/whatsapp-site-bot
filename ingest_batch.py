@@ -23,10 +23,9 @@ import logging
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
-import anthropic
-
 import database as db
 from config import settings
+from llm import is_transient
 from message_parser import classify_and_parse
 from sitetime import SITE_TZ, site_now
 from tunnel_parser import parse_tunnel_update
@@ -37,12 +36,8 @@ logger = logging.getLogger("site_bot")
 SLOT_HOURS = (0, 6, 12, 18)
 
 # A model outage at 06:00 would otherwise fail a whole run's worth of posts.
-# These are the errors worth waiting out; anything else fails the post at once.
-_TRANSIENT = (
-    anthropic.APIConnectionError,
-    anthropic.RateLimitError,
-    anthropic.InternalServerError,
-)
+# llm.is_transient() picks the errors worth waiting out; anything else fails
+# the post at once.
 _RETRY_DELAYS = (5, 30)
 
 # One run at a time: the startup catch-up and a scheduled slot must not both
@@ -83,8 +78,8 @@ async def _call_with_retry(fn, *args):
     for delay in (*_RETRY_DELAYS, None):
         try:
             return await asyncio.to_thread(fn, *args)
-        except _TRANSIENT:
-            if delay is None:
+        except Exception as exc:
+            if delay is None or not is_transient(exc):
                 raise
             logger.warning("batch: transient model error, retrying in %ss", delay)
             await asyncio.sleep(delay)
