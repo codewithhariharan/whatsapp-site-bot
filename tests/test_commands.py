@@ -1,5 +1,8 @@
 """Pure report-building logic in commands.py (no DB / network)."""
+import asyncio
 from datetime import date
+
+import pytest
 
 import commands as cmd
 
@@ -51,3 +54,64 @@ class TestFormatDailyReport:
         report = cmd._format_daily_report(logs, ["Zone1"], self.REPORT_DATE)
         assert "Annex" in report
         assert "Survey" in report
+
+
+# ── Excel: say something while the file is built ──────────────────────────────
+
+class TestExcelProgress:
+    GROUP = "120363021760406818@g.us"
+
+    @pytest.fixture
+    def outbox(self, monkeypatch):
+        import commands as cmd
+        import database as db
+        box = []
+
+        async def send(group_id, text):
+            box.append(("text", text))
+
+        async def send_doc(group_id, data, filename, caption=""):
+            box.append(("file", filename))
+
+        monkeypatch.setattr(cmd, "send_message", send)
+        monkeypatch.setattr(cmd, "send_document", send_doc)
+        monkeypatch.setattr(db, "get_location_order", lambda g: [])
+        return box
+
+    def test_full_record_says_it_is_working_before_the_file(self, outbox, monkeypatch):
+        import commands as cmd
+        import database as db
+        monkeypatch.setattr(db, "get_all_logs", lambda g: [{"log_date": "2026-09-01"}])
+        monkeypatch.setattr(cmd.xls, "generate_full_excel", lambda logs: b"x")
+        asyncio.run(cmd.handle_excel(self.GROUP, ""))
+        assert outbox[0][0] == "text" and "Generating" in outbox[0][1]
+        assert outbox[-1][0] == "file"
+
+    def test_month_says_it_is_working_before_the_file(self, outbox, monkeypatch):
+        import commands as cmd
+        import database as db
+        monkeypatch.setattr(db, "get_logs_for_month", lambda g, y, m: [{"log_date": "2026-01-02"}])
+        monkeypatch.setattr(cmd.xls, "generate_monthly_excel", lambda *a: b"x")
+        asyncio.run(cmd.handle_excel(self.GROUP, "Jan 2026"))
+        assert "Generating the January 2026" in outbox[0][1]
+        assert outbox[-1] == ("file", "Site_Report_January_2026.xlsx")
+
+    def test_a_failure_is_reported_instead_of_silence(self, outbox, monkeypatch):
+        import commands as cmd
+        import database as db
+
+        def boom(g):
+            raise RuntimeError("db down")
+        monkeypatch.setattr(db, "get_all_logs", boom)
+        asyncio.run(cmd.handle_excel(self.GROUP, ""))
+        assert [kind for kind, _ in outbox] == ["text", "text"]
+        assert "Couldn't build" in outbox[-1][1]
+
+    def test_dwall_export_says_it_is_working(self, outbox, monkeypatch):
+        import commands as cmd
+        import database as db
+        monkeypatch.setattr(db, "get_all_panels", lambda g: [{"panel_number": "CN270"}])
+        monkeypatch.setattr(cmd.xls, "generate_dwall_excel", lambda p: b"x")
+        asyncio.run(cmd.handle_dwall_export(self.GROUP))
+        assert "Generating" in outbox[0][1]
+        assert outbox[-1] == ("file", "DWall_Panel_Tracker.xlsx")

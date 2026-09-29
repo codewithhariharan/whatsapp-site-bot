@@ -234,15 +234,24 @@ async def handle_excel(group_id: str, args: str = ""):
         await send_message(group_id, "⚠️ Format: /excel or /excel Jan 2026")
         return
 
-    logs = db.get_logs_for_month(group_id, year, month)
-    locations = db.get_location_order(group_id)
     month_name = calendar.month_name[month]
+    await send_message(group_id, f"⏳ Generating the {month_name} {year} Excel report...")
 
-    if not logs:
-        await send_message(group_id, f"⚠️ No logs found for {month_name} {year}.")
+    # Off the event loop: reading a month of logs and building the workbook
+    # takes seconds, and the bot would stop taking in messages meanwhile.
+    try:
+        logs = await asyncio.to_thread(db.get_logs_for_month, group_id, year, month)
+        locations = await asyncio.to_thread(db.get_location_order, group_id)
+        if not logs:
+            await send_message(group_id, f"⚠️ No logs found for {month_name} {year}.")
+            return
+        file_bytes = await asyncio.to_thread(
+            xls.generate_monthly_excel, group_id, year, month, logs, locations
+        )
+    except Exception:
+        logger.exception("/excel %s failed for %s", args, group_id)
+        await send_message(group_id, "⚠️ Couldn't build the Excel file. Please try again.")
         return
-
-    file_bytes = xls.generate_monthly_excel(group_id, year, month, logs, locations)
     filename = f"Site_Report_{month_name}_{year}.xlsx"
 
     await send_document(
@@ -264,16 +273,24 @@ async def _export_full_record(group_id: str):
     This is what a bare /excel does. It was /excel2 until that became an exact
     duplicate of the no-argument form and was removed.
     """
-    logs = db.get_all_logs(group_id)
-
-    if not logs:
-        await send_message(group_id, "⚠️ No logs found on record.")
+    # The full record is ~40,000 rows; the file takes a while to build, and
+    # without a word the group cannot tell it from the bot being down.
+    await send_message(
+        group_id, "⏳ Generating the full Excel record — this can take a minute..."
+    )
+    try:
+        logs = await asyncio.to_thread(db.get_all_logs, group_id)
+        if not logs:
+            await send_message(group_id, "⚠️ No logs found on record.")
+            return
+        file_bytes = await asyncio.to_thread(xls.generate_full_excel, logs)
+    except Exception:
+        logger.exception("/excel (full record) failed for %s", group_id)
+        await send_message(group_id, "⚠️ Couldn't build the Excel file. Please try again.")
         return
 
     first = _as_date(logs[0])
     last = _as_date(logs[-1])
-
-    file_bytes = xls.generate_full_excel(logs)
     span = f"{first.strftime('%d%b%Y')}-{last.strftime('%d%b%Y')}"
     filename = f"Site_Report_Full_{span}.xlsx"
 
@@ -291,12 +308,17 @@ async def _export_full_record(group_id: str):
 # ── /dwall ────────────────────────────────────────────────────────────────────
 
 async def handle_dwall_export(group_id: str):
-    panels = db.get_all_panels(group_id)
-    if not panels:
-        await send_message(group_id, "⚠️ No D-Wall / Barrette panel records found.")
+    await send_message(group_id, "⏳ Generating the D-Wall panel tracker...")
+    try:
+        panels = await asyncio.to_thread(db.get_all_panels, group_id)
+        if not panels:
+            await send_message(group_id, "⚠️ No D-Wall / Barrette panel records found.")
+            return
+        file_bytes = await asyncio.to_thread(xls.generate_dwall_excel, panels)
+    except Exception:
+        logger.exception("/dwall export failed for %s", group_id)
+        await send_message(group_id, "⚠️ Couldn't build the Excel file. Please try again.")
         return
-
-    file_bytes = xls.generate_dwall_excel(panels)
     filename = "DWall_Panel_Tracker.xlsx"
 
     await send_document(

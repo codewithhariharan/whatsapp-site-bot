@@ -119,8 +119,8 @@ async def _write_site_post(row: dict, parsed: dict) -> str:
             group_id=group_id,
             log_date=received.date(),
             # The time the post was SENT, not the time this run filed it.
-            # "What happened between 12 and 6?" is answered from this, and so
-            # is which of two conflicting posts is the latest.
+            # "What happened between 12 and 6?" is answered from this, and it
+            # puts a morning and an afternoon entry for one place in order.
             logged_at=received,
             sender_name=row["sender_name"],
             sender_number=row["sender_number"],

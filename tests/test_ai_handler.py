@@ -324,13 +324,18 @@ class TestAnswerLayout:
         assert "group them" in prompt and "by location" in prompt
         assert "One *bold heading* per main location" in prompt
 
-    def test_the_latest_entry_wins(self):
-        assert "report the LATEST" in self._prompt()
+    def test_every_entry_is_kept_with_its_time(self):
+        # Engineers visit site twice a day; "in progress" at 10am and
+        # "completed" at 4pm are both records, not a correction.
+        prompt = self._prompt()
+        assert "list every entry, never keep only" in prompt
+        assert "LATEST" not in prompt
 
 
 class TestSqlPromptForTimeAndConflicts:
     def test_time_of_day_uses_site_time(self):
         assert "AT TIME ZONE 'Asia/Singapore'" in ai_handler._SCHEMA
 
-    def test_rows_carry_logged_at_so_the_latest_can_win(self):
+    def test_rows_carry_logged_at_so_each_entry_shows_its_time(self):
         assert "include logged_at" in ai_handler._SCHEMA
+        assert "Never drop or deduplicate" in ai_handler._SCHEMA

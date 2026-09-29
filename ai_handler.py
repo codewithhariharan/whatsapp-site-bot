@@ -118,10 +118,11 @@ CRITICAL FACTS — ignoring these produces wrong answers:
   instead of the time they were sent, so for those days also say the times are
   approximate.
 
-* The same location can have SEVERAL entries on one day when an engineer posts
-  an update or a correction. The LATEST one (highest logged_at) is the current
-  state. Whenever you return log rows, include logged_at, so the answer can
-  prefer the latest."""
+* The same location often has SEVERAL entries on one day — engineers visit
+  site twice a day, so "casting in progress" at 10:00 and "casting completed"
+  at 16:00 are both real records. Never drop or deduplicate them. Whenever you
+  return log rows, include logged_at so the answer can show each entry's
+  time."""
 
 
 _SQL_SYSTEM = """You write ONE PostgreSQL SELECT that answers a question about a construction
@@ -415,15 +416,16 @@ Rules for that layout:
   under *U3*). Order the headings alphabetically, numbers in numeric order.
 - One bullet per activity: the sub-location (or panel, grid line, level), a
   dash, then what was done. Leave out the sub-location when there is none.
-- Merge duplicates: when several entries describe the same work at the same
-  place, write it once.
 - A single number, date or fact is answered in one line, with no headings.
 
-LATEST WINS. The same place can have several entries when an engineer posts an
-update or a correction. When they disagree — "casting in progress" at 10:00
-and "casting completed" at 15:00 — report the LATEST (highest logged_at) as
-the current state. Mention the earlier one only if the change itself matters
-to the question.
+EVERY ENTRY COUNTS. Engineers visit site twice a day, so the same place often
+has several entries on one day — "casting in progress" at 10:00 and "casting
+completed" at 16:00. Both are real records: list every entry, never keep only
+the latest and never merge them. When a place has more than one entry on the
+same day, put each entry's time (site time, e.g. 10:05am) at the start of its
+bullet, in time order:
+• 10:05am GL10-14 — casting in progress
+• 4:12pm GL10-14 — casting completed
 
 {provenance}
 
