@@ -450,3 +450,90 @@ def generate_tunnel_excel(updates: list[dict], flags: list[dict]) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+# ── Site photos ───────────────────────────────────────────────────────────────
+
+# Each photo is re-encoded smaller for the sheet than it is stored: a column of
+# 150 full-size photos would be too heavy to send, and Excel shows them at
+# about this size anyway.
+_SHEET_PHOTO_EDGE = 1024
+_SHEET_PHOTO_QUALITY = 75
+_PHOTO_DISPLAY_WIDTH = 420          # px on screen
+
+_PHOTO_COLUMNS = (
+    ("No.",            6),
+    ("Date",          13),
+    ("Time",           9),
+    ("Location",      22),
+    ("Sub Location",  20),
+    ("Description",   40),
+    ("Sent By",       18),
+    ("Picture",       62),
+)
+
+
+def generate_photo_excel(photos: list[dict], title: str = "") -> bytes:
+    """One photo per row, top to bottom, oldest first, with where and when."""
+    from datetime import datetime
+
+    from openpyxl.drawing.image import Image as XLImage
+
+    from photos import prepare_image
+    from sitetime import SITE_TZ
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Photos"
+    ws.sheet_view.showGridLines = False
+
+    first_row = 1
+    if title:
+        ws.cell(row=1, column=1, value=title).font = Font(bold=True, name="Arial", size=12)
+        first_row = 3
+
+    for i, (header, width) in enumerate(_PHOTO_COLUMNS, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+        cell = ws.cell(row=first_row, column=i, value=header)
+        _style_cell(cell, font=HEADER_FONT, fill=HEADER_FILL,
+                    alignment=Alignment(horizontal="center", vertical="center"))
+    picture_col = get_column_letter(len(_PHOTO_COLUMNS))
+
+    for n, photo in enumerate(photos, start=1):
+        row = first_row + n
+        sent = photo.get("sent_at")
+        if isinstance(sent, str):
+            sent = datetime.fromisoformat(sent)
+        sent = sent.astimezone(SITE_TZ) if sent else None
+        description = photo.get("description") or photo.get("caption") or ""
+        values = (
+            n,
+            sent.date() if sent else "",
+            sent.strftime("%H:%M") if sent else "",
+            photo.get("main_location") or ("" if photo.get("caption") else "(no caption)"),
+            photo.get("sub_location") or "",
+            description,
+            photo.get("sender_name") or "",
+        )
+        for col, value in enumerate(values, start=1):
+            cell = ws.cell(row=row, column=col, value=value)
+            _style_cell(cell, font=CELL_FONT,
+                        alignment=Alignment(vertical="top", wrap_text=True))
+            if isinstance(value, date):
+                cell.number_format = "dd mmm yyyy"
+
+        jpeg, w, h = prepare_image(bytes(photo["image"]), _SHEET_PHOTO_EDGE,
+                                   _SHEET_PHOTO_QUALITY)
+        img = XLImage(io.BytesIO(jpeg))
+        img.width = _PHOTO_DISPLAY_WIDTH
+        img.height = round(_PHOTO_DISPLAY_WIDTH * h / w) if w else _PHOTO_DISPLAY_WIDTH
+        ws.add_image(img, f"{picture_col}{row}")
+        # Points are 3/4 of a pixel; a little padding keeps photos from touching.
+        ws.row_dimensions[row].height = img.height * 0.75 + 8
+        _style_cell(ws.cell(row=row, column=len(_PHOTO_COLUMNS)))
+
+    ws.freeze_panes = ws.cell(row=first_row + 1, column=1)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

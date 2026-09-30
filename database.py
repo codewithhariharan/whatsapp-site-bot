@@ -482,6 +482,7 @@ class QueryError(Exception):
 _DATA_TABLES = (
     "daily_logs", "dwall_panels", "groups", "location_order", "reorder_sessions",
     "pending_messages", "tunnel_updates", "tunnel_progress", "tunnel_flags",
+    "site_photos",
 )
 
 _SCHEMA_QUALIFIED = re.compile(
@@ -788,3 +789,86 @@ def search_tunnel_progress(
         tuple(params) + (limit,),
     )
     return rows, total[0]["n"]
+
+
+# ── Site photos ───────────────────────────────────────────────────────────────
+#
+# See migrations/005_site_photos.sql.
+
+# How far apart a photo and its log's caption may be posted and still belong
+# together. An album arrives within seconds; ten minutes allows for a slow
+# upload without reaching the engineer's next location.
+_PHOTO_LINK_WINDOW = "10 minutes"
+
+
+def insert_site_photo(group_id: str, wa_message_id: str | None, sender_name: str,
+                      sender_number: str, caption: str | None, image: bytes,
+                      width: int, height: int) -> bool:
+    """Store one photo. False if WhatsApp delivered the same message twice."""
+    rows = _fetch(
+        """
+        INSERT INTO site_photos
+            (group_id, wa_message_id, sender_name, sender_number, caption,
+             image, width, height)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (wa_message_id) DO NOTHING
+        RETURNING id
+        """,
+        (group_id, wa_message_id, sender_name, sender_number, caption,
+         image, width, height),
+    )
+    return bool(rows)
+
+
+def link_site_photos(group_ids: list[str] | None = None) -> int:
+    """Attach unlinked photos to the log posted nearest them. Returns how many.
+
+    Same group, same sender, within _PHOTO_LINK_WINDOW, nearest in time. The
+    photo that carried the caption is 0 seconds from its own log; the rest of
+    an album are seconds away. Run after each batch writes its logs, so a photo
+    stays unlinked until its caption is filed.
+    """
+    window = f"interval '{_PHOTO_LINK_WINDOW}'"
+    nearby = f"""
+        FROM daily_logs d
+        WHERE d.group_id = p.group_id
+          AND d.sender_number = p.sender_number
+          AND d.logged_at BETWEEN p.sent_at - {window} AND p.sent_at + {window}
+    """
+    rows = _fetch(
+        f"""
+        UPDATE site_photos AS p
+        SET log_id = (
+            SELECT d.id {nearby}
+            ORDER BY abs(extract(epoch FROM d.logged_at - p.sent_at)), d.logged_at
+            LIMIT 1
+        )
+        WHERE p.log_id IS NULL
+          -- A photo whose caption was chat, not a log, never links; don't
+          -- rescan it on every run forever.
+          AND p.sent_at > NOW() - interval '3 days'
+          AND (%s::text[] IS NULL OR p.group_id = ANY(%s))
+          AND EXISTS (SELECT 1 {nearby})
+        RETURNING p.id
+        """,
+        (group_ids, group_ids),
+    )
+    return len(rows)
+
+
+def get_site_photos(group_id: str, ids: list[int]) -> list[dict]:
+    """The photos with these ids, oldest first — only this group's."""
+    if not ids:
+        return []
+    return _fetch(
+        """
+        SELECT p.id, p.sent_at, p.sender_name, p.caption, p.image,
+               p.width, p.height,
+               d.main_location, d.sub_location, d.description
+        FROM site_photos p
+        LEFT JOIN daily_logs d ON d.id = p.log_id
+        WHERE p.group_id = %s AND p.id = ANY(%s)
+        ORDER BY p.sent_at, p.id
+        """,
+        (group_id, list(ids)),
+    )

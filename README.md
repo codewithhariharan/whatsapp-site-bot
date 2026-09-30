@@ -121,6 +121,12 @@ Manpower: Worker – 1
 
 That header is **not** required. Two locations are the norm — the first is the main location (the broad area), the second the sub location (the detail within it) — but a message naming a single location (`Zone 1 P4: FBCM materials fabrication`) is logged with that as the main location and a blank sub location, and a message naming none is still logged, under `Unknown`. Missing manpower is not disqualifying; it is absent from essentially the entire history. Only genuine chatter — greetings, "noted", leave notices — is ignored.
 
+## Site photos
+
+Every photo posted to the site group is kept in `site_photos` — shrunk to 1600px (~150–300 KB) and stored in the database — including the captionless photos of an album. Each photo is linked to its log: the same sender's log posted within ten minutes, nearest first, linked when the batch run files the caption (`database.link_site_photos`).
+
+`/ask` with a photo word — `/ask show me the pictures of Exit 3 in the last two months` — replies with an Excel sheet: one photo per row, oldest first, with the date, time, location, description and sender beside each (up to 150 per reply). Only photos posted since the feature was deployed (30 Sep 2026) exist; the bridge did not download media before that.
+
 ## Tunnel groups
 
 Each tunnel contract has its own WhatsApp group (`TUNNEL_GROUP_IDS`), and every one sends the same template:

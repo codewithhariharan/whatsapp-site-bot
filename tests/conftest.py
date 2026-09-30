@@ -24,3 +24,14 @@ os.environ.setdefault("BRIDGE_SHARED_SECRET", "test-bridge-secret")
 
 # database.py builds its connection pool lazily, so importing it needs no
 # live database. The tests never touch the DB.
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_photo_linking(monkeypatch):
+    """Every site batch ends by linking photos in the database. Tests have no
+    database, so stub it; a test that cares overrides this."""
+    import database
+    monkeypatch.setattr(database, "link_site_photos", lambda group_ids=None: 0)

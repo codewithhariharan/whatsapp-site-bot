@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import binascii
 import hmac
 import logging
 from contextlib import asynccontextmanager, suppress
@@ -32,10 +34,12 @@ app = FastAPI(title="Site Bot", lifespan=lifespan)
 
 # ── Incoming messages ─────────────────────────────────────────────────────────
 
-async def _safe_handle(group_id: str, sender_name: str, sender_number: str, text: str):
+async def _safe_handle(group_id: str, sender_name: str, sender_number: str, text: str,
+                       image: bytes | None = None, message_id: str | None = None):
     """Run a message handler in the background, logging any failure."""
     try:
-        await handle_message(group_id, sender_name, sender_number, text)
+        await handle_message(group_id, sender_name, sender_number, text,
+                             image=image, message_id=message_id)
     except Exception:
         logger.exception("handle_message failed for %s: %r", group_id, text)
 
@@ -59,13 +63,23 @@ async def baileys_incoming(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
     group_id = data.get("group_id")
     text = (data.get("text") or "").strip()
-    if not group_id or not text:
+
+    # A photo arrives base64-encoded, with or without a caption.
+    image = None
+    if data.get("image_base64"):
+        try:
+            image = base64.b64decode(data["image_base64"], validate=True)
+        except (binascii.Error, ValueError):
+            logger.warning("bridge sent an undecodable image for %s", group_id)
+
+    if not group_id or (not text and not image):
         return {"status": "ignored"}
 
     sender_number = data.get("sender_number", "")
     sender_name = data.get("sender_name") or sender_number
 
-    background_tasks.add_task(_safe_handle, group_id, sender_name, sender_number, text)
+    background_tasks.add_task(_safe_handle, group_id, sender_name, sender_number, text,
+                              image, data.get("message_id"))
     return {"status": "ok"}
 
 

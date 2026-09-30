@@ -1,15 +1,39 @@
 import asyncio
+import logging
+
 from config import settings
 import database as db
 import commands as cmd
+import photos
 from tunnel_handler import handle_master_message, handle_tunnel_message
 
+logger = logging.getLogger("site_bot")
 
-async def handle_message(group_id: str, sender_name: str, sender_number: str, text: str):
+
+async def handle_message(group_id: str, sender_name: str, sender_number: str, text: str,
+                         image: bytes | None = None, message_id: str | None = None):
     """Route an incoming message to the correct handler."""
 
     text = text.strip()
     lower = text.lower()
+
+    # ── Photos ────────────────────────────────────────────────────────────────
+    # Stored as they arrive — WhatsApp's media links expire, so a photo cannot
+    # wait for the batch run the way its caption does. Site groups only: the
+    # tunnel and master groups keep no pictures.
+    if image and group_id not in settings.tunnel_group_ids \
+            and group_id not in settings.master_group_ids:
+        try:
+            await asyncio.to_thread(
+                photos.store_photo, group_id, sender_name, sender_number,
+                text, image, message_id,
+            )
+        except Exception:
+            # A photo that will not store must not cost the caption its log.
+            logger.exception("could not store photo %s from %s", message_id, group_id)
+
+    if not text:
+        return
 
     # ── Master group ──────────────────────────────────────────────────────────
     # The director's view across every tunnel group. Checked first: nothing

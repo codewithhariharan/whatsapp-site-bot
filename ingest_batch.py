@@ -212,6 +212,7 @@ async def run_batch(cutoff: datetime | None = None, label: str | None = None,
 
         failed = defaultdict(list)
         counts = defaultdict(int)
+        site_logged = False
         for row, (parsed, parse_error) in zip(rows, parsed_rows):
             try:
                 if parse_error is not None:
@@ -224,9 +225,20 @@ async def run_batch(cutoff: datetime | None = None, label: str | None = None,
                 status, error = "failed", f"{type(exc).__name__}: {exc}"[:500]
                 failed[row["group_id"]].append(row)
             counts[status] += 1
+            site_logged |= status == "logged" and not _is_tunnel(row)
             await asyncio.to_thread(db.mark_message, row["id"], status, error)
 
         logger.info("batch %s: %s", label or "run", dict(counts))
+
+        # Photos wait unlinked until their caption is filed as a log; this run
+        # may just have filed it. Only site logs carry photos.
+        if site_logged:
+            try:
+                linked = await asyncio.to_thread(db.link_site_photos, group_ids)
+                if linked:
+                    logger.info("batch %s: linked %d photos", label or "run", linked)
+            except Exception:
+                logger.exception("batch: could not link photos")
 
         for gid, bad in failed.items():
             try:

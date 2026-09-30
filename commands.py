@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from datetime import date
 from sitetime import site_today
 import database as db
@@ -391,11 +392,63 @@ async def handle_delete(group_id: str, args: str):
 
 # ── /ask ──────────────────────────────────────────────────────────────────────
 
+async def handle_photo_ask(group_id: str, question: str):
+    """/ask show me the pictures of Exit 3 in the last two months.
+
+    The photos come back as an Excel sheet, one per row, oldest first, with the
+    date, time and location beside each.
+    """
+    import photos
+    from ingest_batch import catch_up
+
+    await send_message(group_id, "🔍 Searching the photos...")
+    await catch_up(group_id)        # file and link posts sent since the last slot
+
+    try:
+        found, description, capped = await asyncio.to_thread(
+            photos.find_photos, group_id, question)
+    except Exception:
+        logger.exception("/ask photos failed for %s: %r", group_id, question)
+        await send_message(group_id, "⚠️ Couldn't search the photos. Try naming the "
+                                     "location and the dates plainly.")
+        return
+
+    if not found:
+        await send_message(
+            group_id,
+            "📭 I couldn't find any photos for that. Photos are only kept from "
+            "30 Sep 2026, when the bot started saving them.")
+        return
+
+    await send_message(group_id, f"⏳ Putting {len(found)} photo"
+                                 f"{'s' if len(found) != 1 else ''} into Excel...")
+    try:
+        title = f"Photos — {description}" if description else "Photos"
+        data = await asyncio.to_thread(xls.generate_photo_excel, found, title)
+    except Exception:
+        logger.exception("/ask photos: Excel failed for %s", group_id)
+        await send_message(group_id, "⚠️ Found the photos but couldn't build the Excel file.")
+        return
+
+    caption = f"📷 {len(found)} photo{'s' if len(found) != 1 else ''}"
+    if description:
+        caption += f" — {description}"
+    if capped:
+        caption += (f"\nOnly the first {photos.MAX_PHOTOS} are included; "
+                    "narrow the dates for the rest.")
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", description or "photos").strip("_")[:40]
+    await send_document(group_id, data, f"Photos_{slug or 'site'}.xlsx", caption=caption)
+
+
 async def handle_ask(group_id: str, question: str):
     from ai_handler import answer_query
     from ingest_batch import catch_up
+    import photos
     if not question.strip():
         await send_message(group_id, "⚠️ Usage: /ask your question here")
+        return
+    if photos.wants_photos(question):
+        await handle_photo_ask(group_id, question)
         return
     await send_message(group_id, "🔍 Searching...")
     await catch_up(group_id)       # file posts sent since the last slot

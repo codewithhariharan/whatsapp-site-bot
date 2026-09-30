@@ -14,6 +14,7 @@
 import 'dotenv/config'
 import makeWASocket, {
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys'
@@ -139,8 +140,38 @@ function extractText(message) {
   return ''
 }
 
+// The message inside the disappearing / view-once wrappers, where the image is.
+function unwrap(message) {
+  if (!message) return message
+  const inner =
+    message.ephemeralMessage?.message ||
+    message.viewOnceMessage?.message ||
+    message.viewOnceMessageV2?.message
+  return inner ? unwrap(inner) : message
+}
+
+// Download a photo as base64 for the Python bot. The media link expires, so
+// this happens now, not later. Returns null on failure — the caption is still
+// forwarded, so a photo that will not download never costs the post its log.
+async function downloadImage(m) {
+  try {
+    const buffer = await downloadMediaMessage(
+      m,
+      'buffer',
+      {},
+      { logger, reuploadRequest: sock.updateMediaMessage },
+    )
+    return buffer.toString('base64')
+  } catch (err) {
+    logger.error({ err, id: m.key?.id }, 'image download failed')
+    return null
+  }
+}
+
 // ── Forward an incoming group message to the Python bot ───────────────────────
-async function forwardToPython({ group_id, sender_name, sender_number, text }) {
+async function forwardToPython({
+  group_id, sender_name, sender_number, text, image_base64, message_id,
+}) {
   try {
     const resp = await fetch(PYTHON_INGEST_URL, {
       method: 'POST',
@@ -148,7 +179,9 @@ async function forwardToPython({ group_id, sender_name, sender_number, text }) {
         'Content-Type': 'application/json',
         'X-Bridge-Secret': SHARED_SECRET,
       },
-      body: JSON.stringify({ group_id, sender_name, sender_number, text }),
+      body: JSON.stringify({
+        group_id, sender_name, sender_number, text, image_base64, message_id,
+      }),
     })
     if (!resp.ok) {
       logger.error(
@@ -286,7 +319,10 @@ async function startSock() {
       }
 
       const text = previewText
-      if (!text) continue
+      // A photo is forwarded even without a caption: in an album only one
+      // photo carries it, and the rest are pictures of the same work.
+      const hasImage = !!unwrap(m.message)?.imageMessage
+      if (!text && !hasImage) continue
 
       // Drop repeat deliveries of a message we've already forwarded. Checked
       // last — after the allowlist and the empty-text filter — so the set only
@@ -310,11 +346,16 @@ async function startSock() {
       const sender_name =
         m.pushName || (m.key.fromMe ? sock.user?.name : '') || sender_number
 
+      const image_base64 = hasImage ? await downloadImage(m) : null
+      if (!text && !image_base64) continue
+
       await forwardToPython({
         group_id: jid,
         sender_name,
         sender_number,
         text,
+        image_base64,
+        message_id: m.key.id || null,
       })
     }
   })
@@ -324,7 +365,8 @@ async function startSock() {
 
 // ── HTTP server: Python calls these to deliver replies into the group ─────────
 const app = express()
-app.use(express.json({ limit: '25mb' })) // Excel exports arrive base64-encoded
+// Excel exports arrive base64-encoded; a sheet of site photos can reach ~40 MB.
+app.use(express.json({ limit: '100mb' }))
 
 function requireSecret(req, res) {
   if (req.headers['x-bridge-secret'] !== SHARED_SECRET) {
