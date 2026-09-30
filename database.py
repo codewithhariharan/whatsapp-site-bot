@@ -821,39 +821,68 @@ def insert_site_photo(group_id: str, wa_message_id: str | None, sender_name: str
 
 
 def link_site_photos(group_ids: list[str] | None = None) -> int:
-    """Attach unlinked photos to the log posted nearest them. Returns how many.
+    """Attach unlinked photos to their logs. Returns how many were linked.
 
-    Same group, same sender, within _PHOTO_LINK_WINDOW, nearest in time. The
-    photo that carried the caption is 0 seconds from its own log; the rest of
-    an album are seconds away. Run after each batch writes its logs, so a photo
-    stays unlinked until its caption is filed.
+    A photo that carried its own caption belongs to the log made from THAT
+    caption, and to nothing else: several captioned photos forwarded together
+    arrive in the same second, so "nearest in time" is a tie between different
+    locations, and a caption that was not filed as a log must not borrow a
+    neighbour's. Such a photo stays unlinked.
+
+    A photo with no caption — the rest of an album — belongs to the same
+    sender's log posted just before it (the album's captioned photo comes
+    first), or failing that, just after.
+
+    Run after each batch writes its logs, so a photo stays unlinked until its
+    caption is filed.
     """
     window = f"interval '{_PHOTO_LINK_WINDOW}'"
-    nearby = f"""
+    same_sender = f"""
         FROM daily_logs d
         WHERE d.group_id = p.group_id
           AND d.sender_number = p.sender_number
           AND d.logged_at BETWEEN p.sent_at - {window} AND p.sent_at + {window}
     """
-    rows = _fetch(
-        f"""
-        UPDATE site_photos AS p
-        SET log_id = (
-            SELECT d.id {nearby}
-            ORDER BY abs(extract(epoch FROM d.logged_at - p.sent_at)), d.logged_at
-            LIMIT 1
-        )
-        WHERE p.log_id IS NULL
+    own_caption = same_sender + " AND d.raw_message = p.caption"
+    recent = """
+          AND p.log_id IS NULL
           -- A photo whose caption was chat, not a log, never links; don't
           -- rescan it on every run forever.
           AND p.sent_at > NOW() - interval '3 days'
           AND (%s::text[] IS NULL OR p.group_id = ANY(%s))
-          AND EXISTS (SELECT 1 {nearby})
+    """
+    captioned = _fetch(
+        f"""
+        UPDATE site_photos AS p
+        SET log_id = (
+            SELECT d.id {own_caption}
+            ORDER BY abs(extract(epoch FROM d.logged_at - p.sent_at)), d.id
+            LIMIT 1
+        )
+        WHERE p.caption IS NOT NULL {recent}
+          AND EXISTS (SELECT 1 {own_caption})
         RETURNING p.id
         """,
         (group_ids, group_ids),
     )
-    return len(rows)
+    uncaptioned = _fetch(
+        f"""
+        UPDATE site_photos AS p
+        SET log_id = (
+            SELECT d.id {same_sender}
+            -- Before the photo (a few seconds' arrival jitter allowed) wins
+            -- over after it; then the closest.
+            ORDER BY (d.logged_at > p.sent_at + interval '5 seconds'),
+                     abs(extract(epoch FROM d.logged_at - p.sent_at)), d.id
+            LIMIT 1
+        )
+        WHERE p.caption IS NULL {recent}
+          AND EXISTS (SELECT 1 {same_sender})
+        RETURNING p.id
+        """,
+        (group_ids, group_ids),
+    )
+    return len(captioned) + len(uncaptioned)
 
 
 def get_site_photos(group_id: str, ids: list[int]) -> list[dict]:

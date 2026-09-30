@@ -46,6 +46,9 @@ Classify this message into one of these types and extract relevant data:
    The location is whatever place the message is about — a zone, a shaft, a grid
    line, a chainage, a panel, a level, a structure name. Take it from anywhere in
    the message, not just a "Main Location:" label.
+   A place followed by a work activity is a log even with no verb and no
+   detail — it is a photo caption naming what the picture shows:
+   "RS\nExcavation status", "U3-32\nSkinwall\nStatus", "Vent Shaft\nExcavation".
 
 2. "dwall" - A D-Wall or Barrette Pile panel detail entry.
    The first line is typically a date and engineer initials in the format: DD/MM/YY(INITIALS)
@@ -97,6 +100,9 @@ For a log naming only one location ("Rebar fixing at Shaft B, 4 workers"):
 
 For a log whose location is a zone plus a grid line ("U3 GL10-14 (South side): Platform slab works ongoing"):
 {{"type": "log", "data": {{"main_location": "U3", "sub_location": "GL10-14 (South side)", "description": "Platform slab works ongoing", "manpower": ""}}}}
+
+For a place and an activity with no verb ("RS\nExcavation status"):
+{{"type": "log", "data": {{"main_location": "RS", "sub_location": "", "description": "Excavation status", "manpower": ""}}}}
 
 For a log with no location at all ("Concrete pour completed today"):
 {{"type": "log", "data": {{"main_location": "Unknown", "sub_location": "", "description": "Concrete pour completed", "manpower": ""}}}}
