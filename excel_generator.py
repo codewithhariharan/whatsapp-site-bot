@@ -462,15 +462,13 @@ _SHEET_PHOTO_EDGE = 1024
 _SHEET_PHOTO_QUALITY = 75
 _PHOTO_DISPLAY_WIDTH = 420          # px on screen
 
+# Exactly these four, as the site asked. The location is the tab's name and
+# its title, so it is not repeated on every row.
 _PHOTO_COLUMNS = (
-    ("No.",            6),
     ("Date",          13),
     ("Time",           9),
-    ("Location",      22),
-    ("Sub Location",  20),
-    ("Description",   40),
-    ("Sent By",       18),
-    ("Picture",       62),
+    ("Description",   45),
+    ("Photo",         62),
 )
 
 
@@ -541,13 +539,9 @@ def _write_photo_sheet(ws, photos: list[dict], title: str, shrunk: dict):
         sent = sent.astimezone(SITE_TZ) if sent else None
         description = photo.get("description") or photo.get("caption") or ""
         values = (
-            n,
             sent.date() if sent else "",
             sent.strftime("%H:%M") if sent else "",
-            photo.get("main_location") or ("" if photo.get("caption") else "(no caption)"),
-            photo.get("sub_location") or "",
-            description,
-            photo.get("sender_name") or "",
+            description or "(no caption)",
         )
         for col, value in enumerate(values, start=1):
             cell = ws.cell(row=row, column=col, value=value)

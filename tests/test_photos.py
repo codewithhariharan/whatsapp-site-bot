@@ -231,9 +231,12 @@ def test_one_tab_per_location_one_photo_per_row():
 
     exit3 = wb["Exit 3"]
     assert exit3["A1"].value == "Exit 3 — 30 Jul - 30 Sep 2026"
-    assert [c.value for c in exit3[3]][:4] == ["No.", "Date", "Time", "Location"]
-    assert exit3["C4"].value == "09:15" and exit3["D4"].value == "Exit 3"
-    assert exit3["C5"].value == "16:40" and exit3["F5"].value == "waterproofing"
+    # Exactly Date, Time, Description, Photo — nothing else.
+    assert [c.value for c in exit3[3]] == ["Date", "Time", "Description", "Photo"]
+    assert exit3.max_column == 4
+    assert exit3["B4"].value == "09:15" and exit3["C4"].value == "slab cast"
+    assert exit3["B5"].value == "16:40" and exit3["C5"].value == "waterproofing"
+    assert {img.anchor._from.col for img in exit3._images} == {3}      # column D
     assert sorted(img.anchor._from.row for img in exit3._images) == [3, 4]
     assert exit3.row_dimensions[5].height > exit3.row_dimensions[4].height   # portrait
 

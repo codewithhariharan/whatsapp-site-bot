@@ -125,7 +125,7 @@ That header is **not** required. Two locations are the norm — the first is the
 
 Every photo posted to the site group is kept in `site_photos` — shrunk to 1600px (~150–300 KB) and stored in the database — including the captionless photos of an album. Each photo is linked to its log when the batch run files the caption (`database.link_site_photos`): a photo with its own caption to the log made from that caption, or none; an uncaptioned album photo to the same sender's log posted just before it.
 
-`/ask` with a photo word — `/ask show me the pictures of Exit 3 in the last two months` — replies with an Excel file with one tab per location asked about — `/ask pictures of Exit 3 and U3-12 this week` gives an `Exit 3` tab and a `U3-12` tab — each listing one photo per row, oldest first, with the date, time, location, description and sender beside it. A location with no photos still gets a tab saying so. At most 100 photos per location and 300 per reply. Only photos posted since the feature was deployed (30 Sep 2026) exist; the bridge did not download media before that.
+`/ask` with a photo word — `/ask show me the pictures of Exit 3 in the last two months` — replies with an Excel file with one tab per location asked about — `/ask pictures of Exit 3 and U3-12 this week` gives an `Exit 3` tab and a `U3-12` tab — each with exactly four columns — Date, Time, Description, Photo — one photo per row, oldest first. A location with no photos still gets a tab saying so. At most 100 photos per location and 300 per reply. Only photos posted since the feature was deployed (30 Sep 2026) exist; the bridge did not download media before that.
 
 ## Tunnel groups
 
