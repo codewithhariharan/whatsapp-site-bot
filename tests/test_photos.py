@@ -168,52 +168,89 @@ def test_each_batch_links_photos_to_the_logs_it_filed(monkeypatch):
 
 # ── Finding ───────────────────────────────────────────────────────────────────
 
-def test_find_photos_is_confined_to_the_group_and_merges_the_details(monkeypatch):
-    seen = {}
+PLAN = ('{"sql": "SELECT 1", "locations": ["Exit 3", "U3-12", "RS"], '
+        '"period": "30 Jul - 30 Sep 2026"}')
 
-    monkeypatch.setattr(photos.llm, "generate", lambda *a, **k: (
-        '{"sql": "SELECT site_photos.id AS photo_id FROM site_photos", '
-        '"description": "Exit 3, 30 Jul - 30 Sep 2026"}'))
+
+def test_find_photos_groups_by_location_in_the_order_asked(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(photos.llm, "generate", lambda *a, **k: PLAN)
 
     def run(sql, group_id, **kw):
         seen.update(kw, group_id=group_id)
-        return [{"photo_id": 7, "main_location": "Exit 3", "description": "slab"},
-                {"photo_id": 9, "main_location": "Exit 3", "description": "wall"}], False
+        return [{"tab": "Exit 3", "photo_id": 7}, {"tab": "Exit 3", "photo_id": 9},
+                {"tab": "U3-12", "photo_id": 9}, {"tab": "U3-12", "photo_id": 12}], False
 
     monkeypatch.setattr(db, "run_readonly_query", run)
     monkeypatch.setattr(db, "get_site_photos", lambda g, ids: [
-        {"id": i, "image": b"x", "sent_at": "2026-09-30T10:00:00+08:00"} for i in ids])
+        {"id": i, "image": b"x"} for i in sorted(ids)])
 
-    found, description, capped = photos.find_photos(SITE_GROUP, "pictures of Exit 3")
-    assert seen["group_id"] == SITE_GROUP
-    assert seen["scope_to_group"] is True
+    sections, period, capped = photos.find_photos(SITE_GROUP, "pictures of Exit 3, U3-12 and RS")
+    assert seen["group_id"] == SITE_GROUP and seen["scope_to_group"] is True
     assert seen["tables"] == ("daily_logs", "site_photos")
-    assert [p["id"] for p in found] == [7, 9]
-    assert found[1]["description"] == "wall"
-    assert description == "Exit 3, 30 Jul - 30 Sep 2026"
+    assert [(loc, [p["id"] for p in found]) for loc, found in sections] == [
+        ("Exit 3", [7, 9]),
+        ("U3-12", [9, 12]),       # a photo matching both locations is on both tabs
+        ("RS", []),               # asked about, none found: still a tab
+    ]
+    assert period == "30 Jul - 30 Sep 2026"
     assert capped is False
+
+
+def test_the_caps_apply_per_location_and_in_all(monkeypatch):
+    monkeypatch.setattr(photos, "MAX_PER_LOCATION", 2)
+    monkeypatch.setattr(photos, "MAX_PHOTOS", 3)
+    monkeypatch.setattr(photos.llm, "generate", lambda *a, **k: PLAN)
+    monkeypatch.setattr(db, "run_readonly_query", lambda *a, **k: (
+        [{"tab": "Exit 3", "photo_id": i} for i in (1, 2, 3)]
+        + [{"tab": "U3-12", "photo_id": i} for i in (4, 5)], False))
+    monkeypatch.setattr(db, "get_site_photos", lambda g, ids: [{"id": i} for i in ids])
+    sections, _, capped = photos.find_photos(SITE_GROUP, "q")
+    assert [[p["id"] for p in found] for _loc, found in sections] == [[1, 2], [4], []]
+    assert capped is True
 
 
 # ── The Excel sheet ───────────────────────────────────────────────────────────
 
-def test_the_sheet_has_one_photo_per_row_in_order():
-    rows = [
-        {"image": photos.prepare_image(jpeg(1600, 1200))[0], "sent_at": "2026-08-01T09:15:00+08:00",
-         "main_location": "Exit 3", "sub_location": "B1", "description": "slab cast",
-         "sender_name": "Ali"},
-        {"image": photos.prepare_image(jpeg(1200, 1600))[0], "sent_at": "2026-09-29T16:40:00+08:00",
-         "main_location": None, "caption": "waterproofing", "sender_name": "Bala"},
+def _row(color, sent, loc, orientation=(1600, 1200), **extra):
+    w, h = orientation
+    return {"id": hash((color, sent)), "image": photos.prepare_image(jpeg(w, h, color))[0],
+            "sent_at": sent, "main_location": loc, "sender_name": "Ali", **extra}
+
+
+def test_one_tab_per_location_one_photo_per_row():
+    sections = [
+        ("Exit 3", [_row((1, 2, 3), "2026-08-01T09:15:00+08:00", "Exit 3", description="slab cast"),
+                    _row((4, 5, 6), "2026-09-29T16:40:00+08:00", None, (1200, 1600),
+                         caption="waterproofing")]),
+        ("U3-12", [_row((7, 8, 9), "2026-09-30T10:58:00+08:00", "U3-12")]),
+        ("RS", []),
     ]
-    wb = load_workbook(io.BytesIO(xls.generate_photo_excel(rows, "Photos — Exit 3")))
-    ws = wb.active
-    assert ws["A1"].value == "Photos — Exit 3"
-    assert [c.value for c in ws[3]][:4] == ["No.", "Date", "Time", "Location"]
-    assert ws["C4"].value == "09:15" and ws["D4"].value == "Exit 3"
-    assert ws["C5"].value == "16:40" and ws["F5"].value == "waterproofing"
-    anchors = sorted(img.anchor._from.row for img in ws._images)
-    assert anchors == [3, 4]                    # 0-based: rows 4 and 5, one each
-    # The portrait photo's row is taller than the landscape one's.
-    assert ws.row_dimensions[5].height > ws.row_dimensions[4].height
+    wb = load_workbook(io.BytesIO(xls.generate_photo_excel(sections, "30 Jul - 30 Sep 2026")))
+    assert wb.sheetnames == ["Exit 3", "U3-12", "RS"]
+
+    exit3 = wb["Exit 3"]
+    assert exit3["A1"].value == "Exit 3 — 30 Jul - 30 Sep 2026"
+    assert [c.value for c in exit3[3]][:4] == ["No.", "Date", "Time", "Location"]
+    assert exit3["C4"].value == "09:15" and exit3["D4"].value == "Exit 3"
+    assert exit3["C5"].value == "16:40" and exit3["F5"].value == "waterproofing"
+    assert sorted(img.anchor._from.row for img in exit3._images) == [3, 4]
+    assert exit3.row_dimensions[5].height > exit3.row_dimensions[4].height   # portrait
+
+    assert len(wb["U3-12"]._images) == 1
+    assert wb["RS"]._images == []
+    assert "No photos found" in wb["RS"]["A4"].value
+
+
+@pytest.mark.parametrize("names, expected", [
+    (["Exit 3"], ["Exit 3"]),
+    (["U3/12: slab"], ["U3-12- slab"]),
+    (["A" * 40], ["A" * 31]),
+    (["Exit 3", "exit 3"], ["Exit 3", "exit 3 (2)"]),
+])
+def test_tab_names_are_valid_and_unique(names, expected):
+    used = set()
+    assert [xls._sheet_name(n, used) for n in names] == expected
 
 
 # ── /ask routing ──────────────────────────────────────────────────────────────
@@ -237,16 +274,27 @@ class TestPhotoAsk:
         monkeypatch.setattr(ib, "catch_up", no_catch_up)
         return box
 
-    def test_a_photo_question_comes_back_as_an_excel_of_pictures(self, out, monkeypatch):
+    def test_several_locations_come_back_as_one_file_with_a_count_per_tab(self, out, monkeypatch):
         monkeypatch.setattr(photos, "find_photos", lambda g, q: (
-            [{"id": 1}, {"id": 2}], "Exit 3, 30 Jul - 30 Sep 2026", False))
-        monkeypatch.setattr(cmd.xls, "generate_photo_excel", lambda rows, title: b"xlsx")
-        asyncio.run(cmd.handle_ask(SITE_GROUP, "show me the pictures of Exit 3 in the last two months"))
-        assert out[-1] == ("file", "Photos_Exit_3_30_Jul_30_Sep_2026.xlsx",
-                           "📷 2 photos — Exit 3, 30 Jul - 30 Sep 2026")
+            [("Exit 3", [{"id": 1}, {"id": 2}]), ("U3-12", [{"id": 3}]), ("RS", [])],
+            "30 Jul - 30 Sep 2026", False))
+        built = {}
+        monkeypatch.setattr(cmd.xls, "generate_photo_excel",
+                            lambda sections, period: built.update(s=sections, p=period) or b"xlsx")
+        asyncio.run(cmd.handle_ask(SITE_GROUP, "pictures of Exit 3, U3-12 and RS last two months"))
+        assert [loc for loc, _ in built["s"]] == ["Exit 3", "U3-12", "RS"]
+        assert out[-1] == ("file", "Photos_Exit_3_U3_12_RS.xlsx",
+                           "📷 3 photos, 30 Jul - 30 Sep 2026\n• Exit 3: 2\n• U3-12: 1\n• RS: 0")
 
-    def test_no_photos_says_so_and_when_saving_started(self, out, monkeypatch):
-        monkeypatch.setattr(photos, "find_photos", lambda g, q: ([], "", False))
+    def test_one_location_keeps_a_one_line_caption(self, out, monkeypatch):
+        monkeypatch.setattr(photos, "find_photos", lambda g, q: (
+            [("Vent Shaft", [{"id": 1}])], "30 Sep 2026", False))
+        monkeypatch.setattr(cmd.xls, "generate_photo_excel", lambda s, p: b"xlsx")
+        asyncio.run(cmd.handle_ask(SITE_GROUP, "photo of Vent Shaft today"))
+        assert out[-1] == ("file", "Photos_Vent_Shaft.xlsx", "📷 1 photo, 30 Sep 2026")
+
+    def test_no_photos_anywhere_says_so_and_when_saving_started(self, out, monkeypatch):
+        monkeypatch.setattr(photos, "find_photos", lambda g, q: ([("Exit 9", [])], "", False))
         asyncio.run(cmd.handle_ask(SITE_GROUP, "pictures of Exit 9"))
         assert "couldn't find any photos" in out[-1][1]
         assert "30 Sep 2026" in out[-1][1]

@@ -1,4 +1,5 @@
 import io
+import re
 from datetime import date, timedelta
 from calendar import monthrange
 from openpyxl import Workbook
@@ -473,8 +474,42 @@ _PHOTO_COLUMNS = (
 )
 
 
-def generate_photo_excel(photos: list[dict], title: str = "") -> bytes:
-    """One photo per row, top to bottom, oldest first, with where and when."""
+_BAD_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]")
+
+
+def _sheet_name(name: str, used: set[str]) -> str:
+    """A valid, unique Excel tab name: no []:*?/ or backslash, at most 31 characters."""
+    base = _BAD_SHEET_CHARS.sub("-", name).strip(" '") or "Photos"
+    base = base[:31]
+    candidate, n = base, 2
+    while candidate.lower() in used:
+        suffix = f" ({n})"
+        candidate = base[:31 - len(suffix)] + suffix
+        n += 1
+    used.add(candidate.lower())
+    return candidate
+
+
+def generate_photo_excel(sections: list[tuple[str, list[dict]]], period: str = "") -> bytes:
+    """One tab per location asked about; on each, one photo per row, oldest
+    first, with where and when. A location with no photos still gets its tab,
+    saying so, so it reads as searched rather than forgotten."""
+    wb = Workbook()
+    wb.remove(wb.active)
+    used: set[str] = set()
+    shrunk: dict = {}           # a photo on two tabs is re-encoded once
+
+    for location, photos in sections or [("Photos", [])]:
+        ws = wb.create_sheet(_sheet_name(location, used))
+        title = f"{location} — {period}" if period else location
+        _write_photo_sheet(ws, photos, title, shrunk)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _write_photo_sheet(ws, photos: list[dict], title: str, shrunk: dict):
     from datetime import datetime
 
     from openpyxl.drawing.image import Image as XLImage
@@ -482,15 +517,9 @@ def generate_photo_excel(photos: list[dict], title: str = "") -> bytes:
     from photos import prepare_image
     from sitetime import SITE_TZ
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Photos"
     ws.sheet_view.showGridLines = False
-
-    first_row = 1
-    if title:
-        ws.cell(row=1, column=1, value=title).font = Font(bold=True, name="Arial", size=12)
-        first_row = 3
+    ws.cell(row=1, column=1, value=title).font = Font(bold=True, name="Arial", size=12)
+    first_row = 3
 
     for i, (header, width) in enumerate(_PHOTO_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
@@ -498,6 +527,11 @@ def generate_photo_excel(photos: list[dict], title: str = "") -> bytes:
         _style_cell(cell, font=HEADER_FONT, fill=HEADER_FILL,
                     alignment=Alignment(horizontal="center", vertical="center"))
     picture_col = get_column_letter(len(_PHOTO_COLUMNS))
+
+    if not photos:
+        ws.cell(row=first_row + 1, column=1,
+                value="No photos found for this location in this period.").font = CELL_FONT
+        return
 
     for n, photo in enumerate(photos, start=1):
         row = first_row + n
@@ -522,8 +556,11 @@ def generate_photo_excel(photos: list[dict], title: str = "") -> bytes:
             if isinstance(value, date):
                 cell.number_format = "dd mmm yyyy"
 
-        jpeg, w, h = prepare_image(bytes(photo["image"]), _SHEET_PHOTO_EDGE,
-                                   _SHEET_PHOTO_QUALITY)
+        key = photo.get("id", id(photo))
+        if key not in shrunk:
+            shrunk[key] = prepare_image(bytes(photo["image"]), _SHEET_PHOTO_EDGE,
+                                        _SHEET_PHOTO_QUALITY)
+        jpeg, w, h = shrunk[key]
         img = XLImage(io.BytesIO(jpeg))
         img.width = _PHOTO_DISPLAY_WIDTH
         img.height = round(_PHOTO_DISPLAY_WIDTH * h / w) if w else _PHOTO_DISPLAY_WIDTH
@@ -533,7 +570,3 @@ def generate_photo_excel(photos: list[dict], title: str = "") -> bytes:
         _style_cell(ws.cell(row=row, column=len(_PHOTO_COLUMNS)))
 
     ws.freeze_panes = ws.cell(row=first_row + 1, column=1)
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()

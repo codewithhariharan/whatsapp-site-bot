@@ -405,7 +405,7 @@ async def handle_photo_ask(group_id: str, question: str):
     await catch_up(group_id)        # file and link posts sent since the last slot
 
     try:
-        found, description, capped = await asyncio.to_thread(
+        sections, period, capped = await asyncio.to_thread(
             photos.find_photos, group_id, question)
     except Exception:
         logger.exception("/ask photos failed for %s: %r", group_id, question)
@@ -413,30 +413,34 @@ async def handle_photo_ask(group_id: str, question: str):
                                      "location and the dates plainly.")
         return
 
-    if not found:
+    total = sum(len(found) for _loc, found in sections)
+    if not total:
         await send_message(
             group_id,
             "📭 I couldn't find any photos for that. Photos are only kept from "
             "30 Sep 2026, when the bot started saving them.")
         return
 
-    await send_message(group_id, f"⏳ Putting {len(found)} photo"
-                                 f"{'s' if len(found) != 1 else ''} into Excel...")
+    await send_message(group_id, f"⏳ Putting {total} photo"
+                                 f"{'s' if total != 1 else ''} into Excel...")
     try:
-        title = f"Photos — {description}" if description else "Photos"
-        data = await asyncio.to_thread(xls.generate_photo_excel, found, title)
+        data = await asyncio.to_thread(xls.generate_photo_excel, sections, period)
     except Exception:
         logger.exception("/ask photos: Excel failed for %s", group_id)
         await send_message(group_id, "⚠️ Found the photos but couldn't build the Excel file.")
         return
 
-    caption = f"📷 {len(found)} photo{'s' if len(found) != 1 else ''}"
-    if description:
-        caption += f" — {description}"
+    # "📷 23 photos, 30 Jul - 30 Sep 2026" then one line per tab.
+    caption = f"📷 {total} photo{'s' if total != 1 else ''}"
+    if period:
+        caption += f", {period}"
+    if len(sections) > 1:
+        caption += "\n" + "\n".join(f"• {loc}: {len(found)}" for loc, found in sections)
     if capped:
-        caption += (f"\nOnly the first {photos.MAX_PHOTOS} are included; "
-                    "narrow the dates for the rest.")
-    slug = re.sub(r"[^A-Za-z0-9]+", "_", description or "photos").strip("_")[:40]
+        caption += (f"\nAt most {photos.MAX_PER_LOCATION} per location and "
+                    f"{photos.MAX_PHOTOS} in all are included; narrow the dates for the rest.")
+    names = "_".join(loc for loc, _found in sections[:3])
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", names or "photos").strip("_")[:40]
     await send_document(group_id, data, f"Photos_{slug or 'site'}.xlsx", caption=caption)
 
 
