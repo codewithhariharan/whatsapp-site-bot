@@ -13,9 +13,9 @@ Two Gemini behaviours shape this module:
     by default, so a cap sized for the visible reply ("400 tokens is a SELECT
     plus a line of reasoning") could be spent thinking and come back empty.
     Callers state the reply they expect; the allowance for thinking is added on
-    top here. Thinking itself is left at the model's default: the knob differs
-    between model generations (a token budget on 2.5, a level on 3.x), and
-    setting the wrong one is a 400 on every call.
+    top here. The knob that limits thinking differs between model generations
+    (a token budget on 2.5, a level on 3.x) and the wrong one is a 400 on every
+    call, so it is set only where it is known — see `_thinking_config()`.
   - Rate limiting is a 429 ClientError, not its own exception class, so "is
     this worth retrying" is a question about the error, not its type. See
     `is_transient()`.
@@ -49,6 +49,20 @@ SMART_MODEL = settings.GEMINI_SMART_MODEL
 _THINKING_ALLOWANCE = 8192
 
 
+def _thinking_config(model: str) -> types.ThinkingConfig | None:
+    """Hold thinking to the allowance, where the model takes a token budget.
+
+    The allowance is only headroom if thinking stays inside it. Left on
+    automatic, 2.5 Flash can think for up to 24k tokens: laying out a 31-row
+    day it spent the allowance AND the room meant for the reply, and the
+    listing stopped a third of the way down. 3.x models take a level instead
+    of a budget and reject this field, so they are left at their default.
+    """
+    if model.startswith("gemini-2.5"):
+        return types.ThinkingConfig(thinking_budget=_THINKING_ALLOWANCE)
+    return None
+
+
 class EmptyReply(RuntimeError):
     """The model returned no text — cut off by the cap, or blocked."""
 
@@ -75,6 +89,7 @@ def generate(prompt: str, *, model: str, max_tokens: int,
         system_instruction=system,
         max_output_tokens=max_tokens + _THINKING_ALLOWANCE,
         response_mime_type="application/json" if json_output else None,
+        thinking_config=_thinking_config(model),
         # No tools are passed, but say so: it keeps the SDK from logging an
         # automatic-function-calling notice on every call.
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
@@ -90,8 +105,10 @@ def generate(prompt: str, *, model: str, max_tokens: int,
         raise EmptyReply(f"{model} returned no text (finish_reason={reason})")
     text = text.strip()
     if getattr(reason, "name", reason) == "MAX_TOKENS":
-        logger.warning("%s reply stopped at the token cap (%d chars kept)",
-                       model, len(text))
+        usage = getattr(response, "usage_metadata", None)
+        logger.warning(
+            "%s reply stopped at the token cap (%d chars kept, %s thinking tokens)",
+            model, len(text), getattr(usage, "thoughts_token_count", "?"))
         if cut_off_note:
             text += cut_off_note
     return text

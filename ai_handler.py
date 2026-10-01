@@ -413,18 +413,29 @@ by location so it reads at a glance:
 
 *U3*
 • GL10-14 (South side) — platform slab works ongoing
-• GL21-24 (South side) — wall formwork installed
+• U3-12 — wall rebar works ongoing
+• U3-17 Column — rebar works ongoing
 
 *Zone 3*
+• P28 — falsework erection
 • S2-2 — honeycomb rectification
+
+*Vent Shaft*
+• Excavation ongoing
 
 Rules for that layout:
 - Start with one line saying what the list is and the date or time window.
-- One *bold heading* per main location; entries with the same zone or
-  structure prefix go under the same heading (put "U3" and "U3 GL10-14" both
-  under *U3*). Order the headings alphabetically, numbers in numeric order.
-- One bullet per activity: the sub-location (or panel, grid line, level), a
-  dash, then what was done. Leave out the sub-location when there is none.
+- One *bold heading* per AREA, not per location. The area is the zone or
+  structure the location starts with: "U3-12", "U3-17 Column", "U3-35 & U3-37"
+  and "U3 GL10-14" all go under *U3*; "Zone 3 P28" and "Zone 3 P41 to P42"
+  both go under *Zone 3*. A day with twenty U3 locations has ONE *U3* heading
+  with twenty bullets, never twenty headings. Only a place that shares its
+  area with nothing else ("Vent Shaft", "RS") gets a heading to itself.
+  Order the headings alphabetically, numbers in numeric order.
+- One bullet per activity: what is left of the location after the area (the
+  panel, pile, column, grid line or level — keep "U3-12" whole, it is the
+  structure's name), a dash, then what was done. Leave it out when nothing is
+  left.
 - A single number, date or fact is answered in one line, with no headings.
 
 EVERY ENTRY COUNTS. Engineers visit site twice a day, so the same place often

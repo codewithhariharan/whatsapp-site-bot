@@ -40,6 +40,20 @@ def test_thinking_gets_room_on_top_of_the_reply(sent):
     assert sent["config"].max_output_tokens > 400
 
 
+def test_thinking_is_held_inside_the_allowance_on_2_5(sent):
+    # Automatic thinking ate the reply's share too and cut a day's listing short.
+    llm.generate("q", model="gemini-2.5-flash", max_tokens=400)
+    config = sent["config"]
+    assert config.thinking_config.thinking_budget == llm._THINKING_ALLOWANCE
+    assert config.max_output_tokens - config.thinking_config.thinking_budget >= 400
+
+
+def test_other_models_keep_their_default_thinking(sent):
+    # 3.x takes a level, not a budget; sending a budget is a 400.
+    llm.generate("q", model="gemini-3-flash", max_tokens=400)
+    assert sent["config"].thinking_config is None
+
+
 def test_system_and_json_mode_are_passed_through(sent):
     llm.generate("q", model="m", max_tokens=10, system="rules", json_output=True)
     assert sent["config"].system_instruction == "rules"

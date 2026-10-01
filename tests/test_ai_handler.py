@@ -348,7 +348,9 @@ class TestAnswerLayout:
     def test_lists_are_grouped_by_location(self):
         prompt = self._prompt()
         assert "group them" in prompt and "by location" in prompt
-        assert "One *bold heading* per main location" in prompt
+        assert "One *bold heading* per AREA, not per location" in prompt
+        # Twenty U3 locations are one heading, not twenty.
+        assert '"U3-12", "U3-17 Column"' in prompt
 
     def test_every_entry_is_kept_with_its_time(self):
         # Engineers visit site twice a day; "in progress" at 10am and
