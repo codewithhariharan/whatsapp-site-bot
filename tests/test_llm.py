@@ -59,6 +59,22 @@ def test_an_empty_reply_raises_instead_of_returning_nothing(sent, text):
         llm.generate("q", model="m", max_tokens=10)
 
 
+def test_a_reply_cut_at_the_cap_carries_the_callers_note(sent):
+    sent["reply"] = _response("• Zone 3 — rebar", finish_reason="MAX_TOKENS")
+    got = llm.generate("q", model="m", max_tokens=10, cut_off_note=" [cut]")
+    assert got == "• Zone 3 — rebar [cut]"
+
+
+def test_a_complete_reply_carries_no_note(sent):
+    assert llm.generate("q", model="m", max_tokens=10, cut_off_note=" [cut]") == "hello"
+
+
+def test_a_cut_reply_is_left_alone_without_a_note(sent):
+    # The parsers read the reply as JSON; nothing may be appended for them.
+    sent["reply"] = _response('{"type": "log"', finish_reason="MAX_TOKENS")
+    assert llm.generate("q", model="m", max_tokens=10) == '{"type": "log"'
+
+
 @pytest.mark.parametrize("exc, expected", [
     (errors.ServerError(503, {"error": {"message": "overloaded"}}), True),
     (errors.ServerError(500, {"error": {"message": "internal"}}), True),

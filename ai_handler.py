@@ -41,6 +41,8 @@ _SQL_MODEL = llm.SMART_MODEL          # writes the query; needs real capability
 _ANSWER_MODEL_SMALL = llm.FAST_MODEL
 _ANSWER_MODEL_LARGE = llm.SMART_MODEL
 _SMALL_RESULT_ROWS = 20
+_ANSWER_BASE_TOKENS = 1500
+_ANSWER_TOKENS_PER_ROW = 60
 
 _QUERY_TIMEOUT_MS = 5000
 _MAX_RESULT_ROWS = 200
@@ -293,8 +295,14 @@ def _run_sql_path(group_id: str, question: str) -> tuple[str, bool, int] | None:
 
         logger.info("/ask: %d rows from %s", len(rows), sql.replace("\n", " ")[:200])
         blob, shown = _fit(rows, _CONTEXT_CHAR_BUDGET)
+        # The row cap is not the only way a listing ends up partial. Rows that
+        # do not fit the context budget are dropped just the same, and a query
+        # whose own LIMIT equals the cap comes back full without tripping it —
+        # the day-listing examples above are written exactly that way.
+        truncated = truncated or shown < len(rows) or len(rows) >= _MAX_RESULT_ROWS
         note = (
-            f" (showing the first {shown}; the query matched more)" if truncated else ""
+            f" (showing the first {shown}; the query may have matched more)"
+            if truncated else ""
         )
         return (
             f"QUERY RUN AGAINST THE FULL RECORD:\n{sql}\n\n"
@@ -422,7 +430,10 @@ Rules for that layout:
 EVERY ENTRY COUNTS. Engineers visit site twice a day, so the same place often
 has several entries on one day — "casting in progress" at 10:00 and "casting
 completed" at 16:00. Both are real records: list every entry, never keep only
-the latest and never merge them. When a place has more than one entry on the
+the latest and never merge them. This outranks being concise: a listing must
+have one bullet for every row in the result, however many there are — shorten
+the bullets, never the list, and never close with "and others" or a summary of
+the rest. When a place has more than one entry on the
 same day, put each entry's time (site time, e.g. 10:05am) at the start of its
 bullet, in time order:
 • 10:05am GL10-14 — casting in progress
@@ -444,4 +455,11 @@ Question: {question}"""
 
     model = (_ANSWER_MODEL_SMALL if rows_shown <= _SMALL_RESULT_ROWS
              else _ANSWER_MODEL_LARGE)
-    return llm.generate(context, model=model, max_tokens=1500)
+    # A bullet is ~40 tokens, so a flat 1,500 cannot hold a busy day's listing.
+    # Size the reply to the rows, and say so if it still stops short.
+    return llm.generate(
+        context, model=model,
+        max_tokens=_ANSWER_BASE_TOKENS + _ANSWER_TOKENS_PER_ROW * rows_shown,
+        cut_off_note="\n\n⚠️ This list was cut short — ask again for a "
+                     "narrower time or location to see the rest.",
+    )

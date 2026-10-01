@@ -132,7 +132,33 @@ class TestResultRendering:
              patch.object(db, "run_readonly_query", return_value=(rows, True)):
             block, truncated, shown = ai_handler._run_sql_path("G", "list everything")
         assert truncated is True
-        assert "the query matched more" in block
+        assert "may have matched more" in block
+
+    def test_rows_dropped_to_fit_the_budget_are_declared(self):
+        # Under the row cap, but too long for the context: the tail is dropped,
+        # and the answer must not present what is left as the whole day.
+        rows = [{"description": "x" * 1000} for _ in range(50)]
+        with patch.object(ai_handler, "_write_sql", return_value={"sql": SCOPED}), \
+             patch.object(db, "run_readonly_query", return_value=(rows, False)):
+            block, truncated, shown = ai_handler._run_sql_path("G", "activities on 30 Sep")
+        assert shown < 50
+        assert truncated is True
+
+    def test_a_query_limit_equal_to_the_cap_is_declared(self):
+        # "LIMIT 200" returns exactly 200 rows and never trips the fetch cap.
+        rows = [{"i": i} for i in range(ai_handler._MAX_RESULT_ROWS)]
+        with patch.object(ai_handler, "_write_sql", return_value={"sql": SCOPED}), \
+             patch.object(db, "run_readonly_query", return_value=(rows, False)):
+            _, truncated, _ = ai_handler._run_sql_path("G", "activities on 30 Sep")
+        assert truncated is True
+
+    def test_a_short_listing_is_not_called_partial(self):
+        rows = [{"i": i} for i in range(29)]
+        with patch.object(ai_handler, "_write_sql", return_value={"sql": SCOPED}), \
+             patch.object(db, "run_readonly_query", return_value=(rows, False)):
+            block, truncated, shown = ai_handler._run_sql_path("G", "activities on 30 Sep")
+        assert (truncated, shown) == (False, 29)
+        assert "matched more" not in block
 
 
 class TestKeywordFallback:
@@ -330,6 +356,22 @@ class TestAnswerLayout:
         prompt = self._prompt()
         assert "list every entry, never keep only" in prompt
         assert "LATEST" not in prompt
+
+    def test_completeness_outranks_brevity(self):
+        assert "one bullet for every row in the result" in self._prompt()
+
+    def test_reply_room_grows_with_the_rows_listed(self):
+        sent = {}
+
+        def fake_generate(prompt, **kwargs):
+            sent.update(kwargs)
+            return "answer"
+
+        with patch.object(ai_handler, "_run_sql_path", return_value=("RESULT", False, 120)), \
+             patch.object(ai_handler.llm, "generate", side_effect=fake_generate):
+            ai_handler.answer_query("G", "activities on 30 Sep")
+        assert sent["max_tokens"] >= 120 * 40
+        assert "cut short" in sent["cut_off_note"]
 
 
 class TestSqlPromptForTimeAndConflicts:

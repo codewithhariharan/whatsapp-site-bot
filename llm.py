@@ -54,7 +54,8 @@ class EmptyReply(RuntimeError):
 
 
 def generate(prompt: str, *, model: str, max_tokens: int,
-             system: str | None = None, json_output: bool = False) -> str:
+             system: str | None = None, json_output: bool = False,
+             cut_off_note: str | None = None) -> str:
     """Send one prompt, return the reply text.
 
     `system` goes first so it forms a stable prefix: Gemini caches repeated
@@ -65,6 +66,10 @@ def generate(prompt: str, *, model: str, max_tokens: int,
     `json_output` asks the API for a JSON body, which removes the stray code
     fences and commentary a plain-text reply sometimes carried. The callers
     still parse defensively.
+
+    `cut_off_note` is appended when the reply stopped at the token cap. A list
+    that ends mid-way looks complete to whoever reads it, so a caller sending
+    the text to people passes the sentence that says it is not.
     """
     config = types.GenerateContentConfig(
         system_instruction=system,
@@ -78,12 +83,18 @@ def generate(prompt: str, *, model: str, max_tokens: int,
         model=model, contents=prompt, config=config,
     )
     text = response.text
+    reason = None
+    if response.candidates:
+        reason = response.candidates[0].finish_reason
     if not text or not text.strip():
-        reason = None
-        if response.candidates:
-            reason = response.candidates[0].finish_reason
         raise EmptyReply(f"{model} returned no text (finish_reason={reason})")
-    return text.strip()
+    text = text.strip()
+    if getattr(reason, "name", reason) == "MAX_TOKENS":
+        logger.warning("%s reply stopped at the token cap (%d chars kept)",
+                       model, len(text))
+        if cut_off_note:
+            text += cut_off_note
+    return text
 
 
 def is_transient(exc: BaseException) -> bool:
