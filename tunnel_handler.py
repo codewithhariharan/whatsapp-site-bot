@@ -35,13 +35,19 @@ HELP_TEXT = (
     "• /ask any instruments breaching AL?\n\n"
     "*/!!* — today's items marked with \"!\"\n"
     "*/!! yesterday*, */!! 28 Sep* — another day\n\n"
+    "*/tunnel* — email the latest day's summary\n"
+    "*/tunnel yesterday*, */tunnel 15 Aug* — another day\n\n"
     "*/excel* — every update as a spreadsheet\n\n"
-    "📌 Engineers: send the standard update —\n"
+    "📌 Engineers: send the standard update, once per shift —\n"
     "TUNNEL PROGRESS UPDATE\n"
     "CONTRACT: CRxxx\n"
     "DATE: DD-MMM-YYYY\n"
+    "SHIFT: Day / Night\n"
     "DRIVE: …\n"
     "PROGRESS: built / current / total (%)\n"
+    "- Follow-on works: …\n"
+    "- Soil disposal: …\n"
+    "- On site storage: …\n"
     "TBM LOCATION: …\n"
     "INSTRUMENTATION: …\n"
     "ISSUES: [None / …]\n\n"
@@ -54,6 +60,8 @@ MASTER_HELP_TEXT = (
     "🚇 *Tunnel Master — Commands*\n\n"
     "*/!!* — today's items marked with \"!\", every contract\n"
     "*/!! yesterday*, */!! 28 Sep*, */!! monday* — another day\n\n"
+    "*/tunnel* — email the latest day's summary, every contract\n"
+    "*/tunnel yesterday*, */tunnel 15 Aug* — another day\n\n"
     "Ask anything else in plain words, e.g.\n"
     "• where is every TBM now?\n"
     "• how many rings did CR146 build this week?\n"
@@ -77,7 +85,11 @@ async def handle_tunnel_message(group_id: str, sender_name: str,
         await handle_flags(group_id, _flags_args(text), all_contracts=False)
         return
 
-    if lower.startswith("/excel") or lower.startswith("/tunnel"):
+    if lower.startswith("/tunnel"):
+        await handle_tunnel_email(group_id, text.strip()[len("/tunnel"):], all_contracts=False)
+        return
+
+    if lower.startswith("/excel"):
         await handle_tunnel_export(group_id, all_contracts=False)
         return
 
@@ -134,7 +146,11 @@ async def handle_master_message(group_id: str, sender_name: str,
         await handle_flags(group_id, _flags_args(text), all_contracts=True)
         return
 
-    if lower.startswith("/excel") or lower.startswith("/tunnel"):
+    if lower.startswith("/tunnel"):
+        await handle_tunnel_email(group_id, text.strip()[len("/tunnel"):], all_contracts=True)
+        return
+
+    if lower.startswith("/excel"):
         await handle_tunnel_export(group_id, all_contracts=True)
         return
 
@@ -304,6 +320,95 @@ async def handle_tunnel_ask(group_id: str, question: str, all_contracts: bool = 
         return
 
     await send_message(group_id, f"🤖 {answer}")
+
+
+# ── /tunnel ───────────────────────────────────────────────────────────────────
+
+# "/tunnel updates", "/tunnel summary for yesterday" — the words around the day.
+_TUNNEL_FILLER = {"update", "updates", "summary", "summarise", "summarize",
+                  "email", "mail", "report", "progress", "please", "pls", "send"}
+
+
+def _mask(address: str) -> str:
+    """h…@gmail.com — the group sees where it went, not the whole address."""
+    name, _, domain = address.partition("@")
+    return f"{name[:1]}…@{domain}" if domain else address
+
+
+async def handle_tunnel_email(group_id: str, args: str, all_contracts: bool):
+    """/tunnel [day] — summarise a day's updates and email them.
+
+    The day defaults to the latest one any update reports on, so /tunnel on the
+    morning after still sends last night's shift rather than an empty today.
+    """
+    import mailer
+    import tunnel_summary as ts
+    from ingest_batch import catch_up
+
+    recipients = settings.tunnel_email_to
+    if not mailer.is_configured(recipients):
+        await send_message(group_id, "⚠️ Email isn't set up for /tunnel yet.")
+        return
+
+    words = [w for w in re.sub(r"[,.]", " ", args).split()
+             if w.lower() not in _TUNNEL_FILLER]
+    scope = None if all_contracts else group_id
+
+    # File anything waiting first, so the latest shift is in the summary.
+    await catch_up(_groups_in_scope(group_id, all_contracts))
+
+    try:
+        if words:
+            day = parse_day(" ".join(words), site_today())
+            if day is None:
+                await send_message(
+                    group_id,
+                    "⚠️ I couldn't read that day. Try /tunnel, /tunnel yesterday "
+                    "or /tunnel 15 Aug."
+                )
+                return
+        else:
+            day = await asyncio.to_thread(db.latest_tunnel_report_date, scope)
+            if day is None:
+                await send_message(group_id, "📭 No tunnel updates recorded yet.")
+                return
+        rows = await asyncio.to_thread(db.get_tunnel_progress_for_day, day, scope)
+        flags = await asyncio.to_thread(db.get_flags_for_report, day, scope)
+    except Exception:
+        logger.exception("/tunnel failed reading %s", group_id)
+        await send_message(group_id, "⚠️ Couldn't read the tunnel updates. Please try again.")
+        return
+
+    if not rows:
+        await send_message(group_id, f"📭 No tunnel updates report on {ts.when(day)}.")
+        return
+
+    await send_message(group_id, f"⏳ Summarising the tunnel updates for {ts.when(day)}...")
+
+    try:
+        ai_text = await asyncio.to_thread(ts.highlights, day, rows, flags)
+    except Exception:
+        # The figures are the point; the email goes without the model's read.
+        logger.exception("/tunnel highlights failed for %s", group_id)
+        ai_text = None
+
+    contracts = sorted({r["contract"] for r in rows})
+    label = "All contracts" if all_contracts else ", ".join(contracts)
+    subject, text, page = ts.build_email(day, rows, flags, ai_text, label)
+    try:
+        await asyncio.to_thread(mailer.send_email, recipients, subject, text, page)
+    except Exception:
+        logger.exception("/tunnel email failed for %s", group_id)
+        await send_message(group_id, "⚠️ The summary was ready but the email didn't send.")
+        return
+
+    await send_message(
+        group_id,
+        f"📧 Tunnel summary for {ts.when(day)} — {len(rows)} update"
+        f"{'s' if len(rows) != 1 else ''}, {len(contracts)} contract"
+        f"{'s' if len(contracts) != 1 else ''} — emailed to "
+        + ", ".join(_mask(r) for r in recipients) + "."
+    )
 
 
 # ── /excel ────────────────────────────────────────────────────────────────────

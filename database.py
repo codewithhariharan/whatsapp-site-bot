@@ -598,15 +598,20 @@ def run_readonly_query(
 
 # ── Tunnel progress (standardised updates) ────────────────────────────────────
 #
-# See migrations/004_tunnel_progress.sql. Figures go to tunnel_progress, one row
-# per (contract, report date, drive); every "!" line goes to tunnel_flags, which
-# is all /!! ever reads.
+# See migrations/004_tunnel_progress.sql and 006_tunnel_shifts.sql. Figures go
+# to tunnel_progress, one row per (contract, report date, drive, shift); every
+# "!" line goes to tunnel_flags, which is all /!! ever reads.
 
 _PROGRESS_FIELDS = (
-    "contract", "report_date", "drive",
+    "contract", "report_date", "drive", "shift",
     "rings_built", "current_ring", "total_rings", "pct_complete",
+    "follow_on_works", "soil_disposal", "on_site_storage",
     "tbm_location", "instrumentation", "issues", "raw_message",
 )
+_PROGRESS_KEY = ("contract", "report_date", "drive", "shift")
+
+# Day before Night within a report date; '' (the older template) first.
+_SHIFT_ORDER = "CASE shift WHEN 'Day' THEN 1 WHEN 'Night' THEN 2 ELSE 0 END"
 
 _SITE_DATE = "(%s::timestamptz AT TIME ZONE 'Asia/Singapore')::date"
 
@@ -616,20 +621,20 @@ def save_tunnel_update(group_id: str, update: dict, flags: list[str],
                        sent_at: datetime) -> bool:
     """File one update and its flags together. Returns True if it replaced one.
 
-    A resend from the same group for the same (contract, report date, drive)
-    is a correction: its
-    figures overwrite the earlier row and its flags replace the earlier
+    A resend from the same group for the same (contract, report date, drive,
+    shift) is a correction: its figures overwrite the earlier row and its flags replace the earlier
     update's flags — a "!" the engineer removed in the correction must not stay
     on the director's list. One transaction, so a failure leaves neither half.
     """
+    update = {**update, "shift": update.get("shift") or ""}
     values = [update.get(f) for f in _PROGRESS_FIELDS]
     cols = ", ".join(_PROGRESS_FIELDS)
     placeholders = ", ".join(["%s"] * len(_PROGRESS_FIELDS))
     updates = ", ".join(
         f"{c} = EXCLUDED.{c}" for c in _PROGRESS_FIELDS
-        if c not in ("contract", "report_date", "drive")
+        if c not in _PROGRESS_KEY
     )
-    key = (update["contract"], update["report_date"], update["drive"])
+    key = tuple(update[k] for k in _PROGRESS_KEY)
 
     with get_pool().connection() as conn:
         with conn.transaction():
@@ -640,7 +645,7 @@ def save_tunnel_update(group_id: str, update: dict, flags: list[str],
                     INSERT INTO tunnel_progress
                         (group_id, {cols}, sender_name, sender_number, sent_at)
                     VALUES (%s, {placeholders}, %s, %s, %s)
-                    ON CONFLICT (group_id, contract, report_date, drive) DO UPDATE
+                    ON CONFLICT (group_id, contract, report_date, drive, shift) DO UPDATE
                         SET {updates},
                             sender_name = EXCLUDED.sender_name,
                             sender_number = EXCLUDED.sender_number,
@@ -653,19 +658,20 @@ def save_tunnel_update(group_id: str, update: dict, flags: list[str],
                 replaced = bool(cur.fetchone()["replaced"])
                 cur.execute(
                     "DELETE FROM tunnel_flags WHERE group_id = %s "
-                    "AND contract = %s AND report_date = %s AND drive = %s",
+                    "AND contract = %s AND report_date = %s AND drive = %s "
+                    "AND COALESCE(shift, '') = %s",
                     (group_id, *key),
                 )
                 for text in flags:
                     cur.execute(
                         f"""
                         INSERT INTO tunnel_flags
-                            (group_id, contract, drive, report_date, flag_text,
-                             sender_name, sent_at, sent_date)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, {_SITE_DATE})
+                            (group_id, contract, drive, report_date, shift,
+                             flag_text, sender_name, sent_at, sent_date)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, {_SITE_DATE})
                         """,
                         (group_id, update["contract"], update["drive"],
-                         update["report_date"], text,
+                         update["report_date"], update["shift"], text,
                          sender_name, sent_at, sent_at),
                     )
     return replaced
@@ -697,7 +703,7 @@ def group_contract(group_id: str) -> str | None:
     """
     rows = _fetch(
         "SELECT contract FROM tunnel_progress WHERE group_id = %s "
-        "ORDER BY report_date DESC, sent_at DESC LIMIT 1",
+        f"ORDER BY report_date DESC, {_SHIFT_ORDER} DESC, sent_at DESC LIMIT 1",
         (group_id,),
     )
     return rows[0]["contract"] if rows else None
@@ -735,6 +741,12 @@ def get_all_flags(group_id: str | None = None) -> list[dict]:
     )
 
 
+_PROGRESS_COLUMNS = """contract, report_date, shift, drive, rings_built,
+               current_ring, total_rings, pct_complete, follow_on_works,
+               soil_disposal, on_site_storage, tbm_location, instrumentation,
+               issues, sender_name, sent_at"""
+
+
 def get_tunnel_progress(group_id: str | None = None) -> list[dict]:
     """Every update, oldest first within each contract and drive."""
     where, params = "", ()
@@ -742,22 +754,71 @@ def get_tunnel_progress(group_id: str | None = None) -> list[dict]:
         where, params = "WHERE group_id = %s", (group_id,)
     return _fetch(
         f"""
-        SELECT contract, report_date, drive, rings_built, current_ring,
-               total_rings, pct_complete, tbm_location, instrumentation,
-               issues, sender_name, sent_at
+        SELECT {_PROGRESS_COLUMNS}
         FROM tunnel_progress {where}
-        ORDER BY contract, drive, report_date
+        ORDER BY contract, drive, report_date, {_SHIFT_ORDER}
         """,
         params,
     )
 
 
+def latest_tunnel_report_date(group_id: str | None = None) -> date | None:
+    """The newest DATE any update in scope reports on. None if there are none."""
+    where, params = "", ()
+    if group_id:
+        where, params = "WHERE group_id = %s", (group_id,)
+    rows = _fetch(f"SELECT MAX(report_date) AS d FROM tunnel_progress {where}", params)
+    value = rows[0]["d"] if rows else None
+    return date.fromisoformat(value) if value else None
+
+
+def get_tunnel_progress_for_day(day: date, group_id: str | None = None) -> list[dict]:
+    """Every update reporting on `day`, by contract, drive, then Day / Night."""
+    where, params = ["report_date = %s"], [day]
+    if group_id:
+        where.append("group_id = %s")
+        params.append(group_id)
+    return _fetch(
+        f"""
+        SELECT {_PROGRESS_COLUMNS}
+        FROM tunnel_progress
+        WHERE {' AND '.join(where)}
+        ORDER BY contract, drive, {_SHIFT_ORDER}
+        """,
+        tuple(params),
+    )
+
+
+def get_flags_for_report(day: date, group_id: str | None = None) -> list[dict]:
+    """The "!" lines that belong to `day`'s reports.
+
+    Those inside an update reporting on `day`, and loose ones sent that day —
+    the same day /!! would list them under.
+    """
+    where = ["(report_date = %s OR (report_date IS NULL AND sent_date = %s))"]
+    params = [day, day]
+    if group_id:
+        where.append("group_id = %s")
+        params.append(group_id)
+    return _fetch(
+        f"""
+        SELECT contract, drive, shift, flag_text, sender_name, sent_at
+        FROM tunnel_flags
+        WHERE {' AND '.join(where)}
+        ORDER BY contract NULLS LAST, sent_at, id
+        """,
+        tuple(params),
+    )
+
+
 _PROGRESS_SEARCH_COLUMNS = (
-    "contract", "report_date", "drive", "rings_built", "current_ring",
-    "total_rings", "pct_complete", "tbm_location", "instrumentation", "issues",
+    "contract", "report_date", "shift", "drive", "rings_built", "current_ring",
+    "total_rings", "pct_complete", "follow_on_works", "soil_disposal",
+    "on_site_storage", "tbm_location", "instrumentation", "issues",
 )
 _PROGRESS_MATCH_COLUMNS = (
-    "contract", "drive", "tbm_location", "instrumentation", "issues",
+    "contract", "drive", "follow_on_works", "soil_disposal", "on_site_storage",
+    "tbm_location", "instrumentation", "issues",
 )
 
 

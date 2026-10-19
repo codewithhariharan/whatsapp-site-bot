@@ -3,15 +3,21 @@
 Every contract group sends the same template:
 
     TUNNEL PROGRESS UPDATE
-    CONTRACT: CR146
-    DATE: 04-JAN-2026
+    CONTRACT: P103
+    DATE: 15-Aug-2026
+    SHIFT: Day
+    DRIVE: LDTBM Main Drive
+    PROGRESS: 3 / 1205 / 1759 (68.5%)
+    - Follow-on works: First stage concrete 0 / 731 / 1759 rings
+    - Soil disposal: 102 loads (TSSG), approx. 5.2 rings vs 3 rings excavated
+    - On site storage: 3.6 / 62 rings
+    TBM LOCATION: Underneath Punggol Central Road
+    INSTRUMENTATION: All within AL
+    ISSUES: [None]
 
-    DRIVE: EB - Main Drive 3
-    PROGRESS: 0 / 225 / 888 (25.3%)
-    TBM LOCATION: at side table of AMK Ave 3
-
-    INSTRUMENTATION: LG3053 breached AL
-    ISSUES: [shift change]
+SHIFT and the three "-" lines under PROGRESS came in October 2026; updates
+sent before then have none of them, and still read. Day and night shifts are
+separate updates, each with its own figures.
 
 The template is fixed, so this is parsed with rules, not a model: the result is
 exact, instant and free. What varies is only typing — WhatsApp bold asterisks
@@ -31,22 +37,38 @@ from datetime import date, datetime
 _FIELDS = {
     "CONTRACT": "contract",
     "DATE": "date",
+    "SHIFT": "shift",
     "DRIVE": "drive",
     "PROGRESS": "progress",
+    "FOLLOW ON WORKS": "follow_on_works",
+    "FOLLOW ON WORK": "follow_on_works",
+    "SOIL DISPOSAL": "soil_disposal",
+    "ON SITE STORAGE": "on_site_storage",
     "TBM LOCATION": "tbm_location",
     "INSTRUMENTATION": "instrumentation",
     "ISSUES": "issues",
     "ISSUE": "issues",
 }
 
-# A label, optionally wrapped in WhatsApp bold/italic marks, then a colon. The
-# value runs to the next label or the end, so the parser works whether or not
-# each field is on its own line.
+# A label, optionally wrapped in WhatsApp bold/italic marks or opened with a
+# "-" bullet, then a colon. The value runs to the next label or the end, so the
+# parser works whether or not each field is on its own line.
+#
+# A label must open a line, or follow a formatting mark or a bullet. Free text
+# says "Total for the date: 102 loads" — that "date:" sits mid-sentence and is
+# part of the soil disposal line, not a new field.
 _LABEL = re.compile(
-    r"[*_~\s]*\b(CONTRACT|DATE|DRIVE|PROGRESS|TBM\s+LOCATION|INSTRUMENTATION|ISSUES?)"
-    r"\b[*_~\s]*:",
-    re.I,
+    r"(?:^|(?<=[*_~\-•–]))[ \t]*[-•–]?[*_~ \t]*"
+    r"\b(CONTRACT|DATE|SHIFT|DRIVE|PROGRESS|FOLLOW[-\s]?ON\s+WORKS?|"
+    r"SOIL\s+DISPOSAL|ON[-\s]?SITE\s+STORAGE|TBM\s+LOCATION|INSTRUMENTATION|ISSUES?)"
+    r"\b[*_~ \t]*:",
+    re.I | re.M,
 )
+
+
+def _label_key(match: re.Match) -> str:
+    return _FIELDS[" ".join(match.group(1).upper().replace("-", " ").split())]
+
 
 _HEADER = re.compile(r"TUNNEL\s+PROGRESS\s+UPDATE", re.I)
 
@@ -88,8 +110,7 @@ def is_progress_update(text: str) -> bool:
     """
     if _HEADER.search(text):
         return True
-    labels = {_FIELDS[" ".join(m.group(1).upper().split())]
-              for m in _LABEL.finditer(text)}
+    labels = {_label_key(m) for m in _LABEL.finditer(text)}
     return {"contract", "progress"} <= labels
 
 
@@ -97,7 +118,7 @@ def _fields(text: str) -> dict[str, str]:
     matches = list(_LABEL.finditer(text))
     found: dict[str, str] = {}
     for i, match in enumerate(matches):
-        key = _FIELDS[" ".join(match.group(1).upper().split())]
+        key = _label_key(match)
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         value = _clean(text[match.end():end])
         # The first occurrence wins; a later "date:" inside the ISSUES text must
@@ -132,6 +153,21 @@ def normalise_drive(value: str) -> str:
     return re.sub(r"\s*-\s*", " - ", _clean(value)).strip(" -")
 
 
+def normalise_shift(value: str | None) -> str:
+    """'Day', 'day shift', 'D' -> 'Day'; 'Night', 'N/S' -> 'Night'.
+
+    The shift is part of the key a resend replaces on, so it is written one
+    way. '' when the update has no SHIFT line (the older template).
+    """
+    shift = strip_marks(value or "")
+    lowered = shift.lower()
+    if re.match(r"^d(ay)?\b", lowered):
+        return "Day"
+    if re.match(r"^n(ight)?\b", lowered):
+        return "Night"
+    return shift
+
+
 def _issues(value: str | None) -> str | None:
     if value is None:
         return None
@@ -143,6 +179,11 @@ def _issues(value: str | None) -> str | None:
         inner = bracketed.group(1).strip()
     inner = strip_marks(inner)
     return None if inner.lower().strip(" .") in _NONE_WORDS else inner
+
+
+def _text(value: str | None) -> str | None:
+    """A free-text field as written. 'Nil' is kept: it is the engineer's answer."""
+    return strip_marks(value or "") or None
 
 
 def parse_progress_update(text: str) -> dict | None:
@@ -183,11 +224,15 @@ def parse_progress_update(text: str) -> dict | None:
     return {
         "contract": contract,
         "report_date": report_date,
+        "shift": normalise_shift(fields.get("shift")),
         "drive": normalise_drive(strip_marks(fields["drive"])),
         "rings_built": number(built),
         "current_ring": number(current),
         "total_rings": number(total),
         "pct_complete": number(pct),
+        "follow_on_works": _text(fields.get("follow_on_works")),
+        "soil_disposal": _text(fields.get("soil_disposal")),
+        "on_site_storage": _text(fields.get("on_site_storage")),
         "tbm_location": strip_marks(fields.get("tbm_location") or "") or None,
         "instrumentation": strip_marks(fields.get("instrumentation") or "") or None,
         "issues": _issues(fields.get("issues")),

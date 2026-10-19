@@ -39,14 +39,21 @@ _OUT_OF_SCOPE_TABLES = (
 )
 
 
-_SCHEMA = """TABLE tunnel_progress  -- one row per contract, per report date, per drive
+_SCHEMA = """TABLE tunnel_progress  -- one row per contract, report date, drive and shift
     contract        TEXT     'CR146' — each contract has its own WhatsApp group
     report_date     DATE     the DATE written in the update (the day it reports on)
+    shift           TEXT     'Day' or 'Night'; '' on updates sent before shifts
+                             were reported
     drive           TEXT     'EB - Main Drive 3', 'WB - Main Drive 2'
-    rings_built     NUMERIC  rings built on that report's day
+    rings_built     NUMERIC  rings built in that shift (or that day, if no shift)
     current_ring    NUMERIC  the cumulative ring reached (running total)
     total_rings     NUMERIC  rings in the whole drive
     pct_complete    NUMERIC  the % completion AS WRITTEN by the engineer
+    follow_on_works TEXT     e.g. 'First stage concrete 0 / 731 / 1759 rings'
+    soil_disposal   TEXT     loads taken away vs rings excavated, e.g. '102 loads
+                             (TSSG), approx. 5.2 rings vs 3 rings excavated,
+                             delta +2.2 rings'; 'Nil' when nothing went out
+    on_site_storage TEXT     muck held on site, e.g. '3.6 / 62 rings'
     tbm_location    TEXT     'at side table of AMK Ave 3', 'undercrossing PIE'
     instrumentation TEXT     'All within AL', or which instruments breached / trend
                              toward AL (Alert Level), e.g. 'LG3053 breached AL'
@@ -74,9 +81,9 @@ CRITICAL FACTS — ignoring these produces wrong answers:
   or "exclamation" are about tunnel_flags, and tunnel_flags ALONE — filter it by
   sent_date, the day the flag was posted. Do not widen them into `issues`.
 
-* rings_built is per day, so rings over a period is SUM(rings_built).
-  current_ring is cumulative: never SUM it; its change over a period is
-  MAX(current_ring) - MIN(current_ring) for one drive.
+* rings_built is per shift, so rings in a day or a period is SUM(rings_built)
+  over every shift. current_ring is cumulative: never SUM it; its change over a
+  period is MAX(current_ring) - MIN(current_ring) for one drive.
 
 * A contract can report more than one drive; keep drives apart when comparing
   progress or completion.
@@ -86,7 +93,8 @@ CRITICAL FACTS — ignoring these produces wrong answers:
   if the question is about accuracy.
 
 * "Latest" or "now" means the row with the highest report_date for that
-  contract and drive."""
+  contract and drive, and on that date the Night shift over the Day shift:
+  ORDER BY report_date DESC, (shift = 'Night') DESC."""
 
 
 _SCOPED_RULE = """2. ALWAYS scope to the group: include
@@ -126,13 +134,13 @@ EXAMPLES   (dates come from the user turn — never from these examples)
 {{"sql": "SELECT contract, drive, flag_text, sent_at FROM tunnel_flags WHERE {scope_sql}sent_date = '2026-01-04' ORDER BY contract, sent_at LIMIT 100", "reasoning": "flags posted that day"}}
 
 "where is every TBM now?"
-{{"sql": "SELECT DISTINCT ON (contract, drive) contract, drive, report_date, current_ring, total_rings, pct_complete, tbm_location FROM tunnel_progress WHERE {scope_sql}TRUE ORDER BY contract, drive, report_date DESC LIMIT 50", "reasoning": "latest row per contract and drive"}}
+{{"sql": "SELECT DISTINCT ON (contract, drive) contract, drive, report_date, current_ring, total_rings, pct_complete, tbm_location FROM tunnel_progress WHERE {scope_sql}TRUE ORDER BY contract, drive, report_date DESC, (shift = 'Night') DESC LIMIT 50", "reasoning": "latest row per contract and drive"}}
 
 "how many rings did CR146 build this week?"   (if today is 2026-01-05, a Monday)
 {{"sql": "SELECT contract, drive, SUM(rings_built) AS rings, MIN(report_date) AS from_date, MAX(report_date) AS to_date FROM tunnel_progress WHERE {scope_sql}contract = 'CR146' AND report_date BETWEEN '2026-01-05' AND '2026-01-05' GROUP BY contract, drive", "reasoning": "rings_built is per day, so SUM"}}
 
 "which contracts have instruments breaching AL?"
-{{"sql": "SELECT DISTINCT ON (contract, drive) contract, drive, report_date, instrumentation FROM tunnel_progress WHERE {scope_sql}instrumentation NOT ILIKE 'all within al%' ORDER BY contract, drive, report_date DESC LIMIT 50", "reasoning": "latest instrumentation that is not all-clear"}}
+{{"sql": "SELECT DISTINCT ON (contract, drive) contract, drive, report_date, instrumentation FROM tunnel_progress WHERE {scope_sql}instrumentation NOT ILIKE 'all within al%' ORDER BY contract, drive, report_date DESC, (shift = 'Night') DESC LIMIT 50", "reasoning": "latest instrumentation that is not all-clear"}}
 
 "what issues did CR125 have?"
 {{"sql": "SELECT report_date, drive, issues FROM tunnel_progress WHERE {scope_sql}contract = 'CR125' AND issues IS NOT NULL ORDER BY report_date DESC LIMIT 30", "reasoning": "issues column, None filtered out"}}
@@ -315,8 +323,8 @@ heading* per contract (e.g. *CR146*), then one bullet per drive or item.
 What the fields mean — do not infer them from the name:
 • PROGRESS 'a / b / c (p%)' = rings built that day / current (cumulative) ring /
   total rings in the drive (percent complete as written).
-• rings_built is per day and can be added up; current_ring is a running total
-  and must not be.
+• rings_built is per shift (Day / Night) and can be added up; current_ring is
+  a running total and must not be.
 • AL = Alert Level for ground instrumentation. "All within AL" is the all-clear;
   a named instrument "breached AL" or "close to AL" needs attention.
 • tunnel_flags are the lines engineers marked with "!" — report them word for

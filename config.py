@@ -41,6 +41,18 @@ class Settings(BaseSettings):
     # same reason as above. Empty means there is no master group.
     MASTER_GROUP_IDS: str = ""
 
+    # /tunnel emails the day's tunnel summary. Sent over SMTP with STARTTLS —
+    # for Gmail, smtp.gmail.com:587 with the account's app password (not its
+    # normal password; Google refuses that). GCE blocks outbound port 25, not
+    # 587. TUNNEL_EMAIL_TO is comma-separated. Leave SMTP_HOST or
+    # TUNNEL_EMAIL_TO empty and /tunnel says email is not set up.
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    EMAIL_FROM: str = ""              # defaults to SMTP_USER
+    TUNNEL_EMAIL_TO: str = ""
+
     @property
     def tunnel_group_ids(self) -> set[str]:
         return {g.strip() for g in self.TUNNEL_GROUP_IDS.split(",") if g.strip()}
@@ -48,6 +60,10 @@ class Settings(BaseSettings):
     @property
     def master_group_ids(self) -> set[str]:
         return {g.strip() for g in self.MASTER_GROUP_IDS.split(",") if g.strip()}
+
+    @property
+    def tunnel_email_to(self) -> list[str]:
+        return [a.strip() for a in self.TUNNEL_EMAIL_TO.split(",") if a.strip()]
 
     class Config:
         env_file = ".env"
