@@ -11,16 +11,19 @@ are held and filed at the 00/06/12/18 runs, or straight away when someone asks.
 The master group holds the senior group director and the bot. It sends nothing
 to file. /!! lists the day's flags from every contract; anything else is a
 question answered across every contract.
+
+/tunnel emails a day's summary on request, and daily_email_scheduler() emails
+every contract's summary for the day at TUNNEL_DAILY_EMAIL_AT.
 """
 
 import asyncio
 import logging
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import database as db
 from config import settings
-from sitetime import site_today
+from sitetime import site_now, site_today
 from tunnel_parser import extract_flags, is_progress_update, parse_date
 from whatsapp_client import send_message, send_document
 
@@ -35,7 +38,7 @@ HELP_TEXT = (
     "• /ask any instruments breaching AL?\n\n"
     "*/!!* — today's items marked with \"!\"\n"
     "*/!! yesterday*, */!! 28 Sep* — another day\n\n"
-    "*/tunnel* — email the latest day's summary\n"
+    "*/tunnel* — email today's summary\n"
     "*/tunnel yesterday*, */tunnel 15 Aug* — another day\n\n"
     "*/excel* — every update as a spreadsheet\n\n"
     "📌 Engineers: send the standard update, once per shift —\n"
@@ -60,13 +63,14 @@ MASTER_HELP_TEXT = (
     "🚇 *Tunnel Master — Commands*\n\n"
     "*/!!* — today's items marked with \"!\", every contract\n"
     "*/!! yesterday*, */!! 28 Sep*, */!! monday* — another day\n\n"
-    "*/tunnel* — email the latest day's summary, every contract\n"
+    "*/tunnel* — email today's summary, every contract\n"
     "*/tunnel yesterday*, */tunnel 15 Aug* — another day\n\n"
     "Ask anything else in plain words, e.g.\n"
     "• where is every TBM now?\n"
     "• how many rings did CR146 build this week?\n"
     "• which contracts have instruments breaching AL?\n\n"
-    "*/excel* — every contract's updates as a spreadsheet"
+    "*/excel* — every contract's updates as a spreadsheet\n\n"
+    "📧 Every contract's summary is also emailed daily at 6pm."
 )
 
 
@@ -338,8 +342,7 @@ def _mask(address: str) -> str:
 async def handle_tunnel_email(group_id: str, args: str, all_contracts: bool):
     """/tunnel [day] — summarise a day's updates and email them.
 
-    The day defaults to the latest one any update reports on, so /tunnel on the
-    morning after still sends last night's shift rather than an empty today.
+    The day defaults to today, site time.
     """
     import mailer
     import tunnel_summary as ts
@@ -352,26 +355,20 @@ async def handle_tunnel_email(group_id: str, args: str, all_contracts: bool):
 
     words = [w for w in re.sub(r"[,.]", " ", args).split()
              if w.lower() not in _TUNNEL_FILLER]
+    day = parse_day(" ".join(words), site_today())
+    if day is None:
+        await send_message(
+            group_id,
+            "⚠️ I couldn't read that day. Try /tunnel, /tunnel yesterday "
+            "or /tunnel 15 Aug."
+        )
+        return
     scope = None if all_contracts else group_id
 
     # File anything waiting first, so the latest shift is in the summary.
     await catch_up(_groups_in_scope(group_id, all_contracts))
 
     try:
-        if words:
-            day = parse_day(" ".join(words), site_today())
-            if day is None:
-                await send_message(
-                    group_id,
-                    "⚠️ I couldn't read that day. Try /tunnel, /tunnel yesterday "
-                    "or /tunnel 15 Aug."
-                )
-                return
-        else:
-            day = await asyncio.to_thread(db.latest_tunnel_report_date, scope)
-            if day is None:
-                await send_message(group_id, "📭 No tunnel updates recorded yet.")
-                return
         rows = await asyncio.to_thread(db.get_tunnel_progress_for_day, day, scope)
         flags = await asyncio.to_thread(db.get_flags_for_report, day, scope)
     except Exception:
@@ -385,18 +382,10 @@ async def handle_tunnel_email(group_id: str, args: str, all_contracts: bool):
 
     await send_message(group_id, f"⏳ Summarising the tunnel updates for {ts.when(day)}...")
 
-    try:
-        ai_text = await asyncio.to_thread(ts.highlights, day, rows, flags)
-    except Exception:
-        # The figures are the point; the email goes without the model's read.
-        logger.exception("/tunnel highlights failed for %s", group_id)
-        ai_text = None
-
     contracts = sorted({r["contract"] for r in rows})
     label = "All contracts" if all_contracts else ", ".join(contracts)
-    subject, text, page = ts.build_email(day, rows, flags, ai_text, label)
     try:
-        await asyncio.to_thread(mailer.send_email, recipients, subject, text, page)
+        await asyncio.to_thread(_send_summary, day, rows, flags, label, recipients)
     except Exception:
         logger.exception("/tunnel email failed for %s", group_id)
         await send_message(group_id, "⚠️ The summary was ready but the email didn't send.")
@@ -409,6 +398,80 @@ async def handle_tunnel_email(group_id: str, args: str, all_contracts: bool):
         f"{'s' if len(contracts) != 1 else ''} — emailed to "
         + ", ".join(_mask(r) for r in recipients) + "."
     )
+
+
+def _send_summary(day: date, rows: list[dict], flags: list[dict], label: str,
+                  recipients: list[str]) -> None:
+    """Build one day's summary and email it. Blocking; raises if the send fails."""
+    import mailer
+    import tunnel_summary as ts
+
+    try:
+        ai_text = ts.highlights(day, rows, flags)
+    except Exception:
+        # The figures are the point; the email goes without the model's read.
+        logger.exception("tunnel highlights failed for %s", day)
+        ai_text = None
+    subject, text, page = ts.build_email(day, rows, flags, ai_text, label)
+    mailer.send_email(recipients, subject, text, page)
+
+
+# ── The daily email ───────────────────────────────────────────────────────────
+
+async def send_daily_email(day: date) -> None:
+    """Every contract's summary for `day`, emailed. No WhatsApp message.
+
+    A day with no updates still sends a short note, so a missing email always
+    means something went wrong rather than a quiet day.
+    """
+    import mailer
+    import tunnel_summary as ts
+    from ingest_batch import catch_up
+
+    recipients = settings.tunnel_email_to
+    if not mailer.is_configured(recipients):
+        logger.warning("daily tunnel email skipped: email is not set up")
+        return
+
+    await catch_up(sorted(settings.tunnel_group_ids))
+    rows = await asyncio.to_thread(db.get_tunnel_progress_for_day, day, None)
+    flags = await asyncio.to_thread(db.get_flags_for_report, day, None)
+
+    if rows:
+        await asyncio.to_thread(_send_summary, day, rows, flags, "All contracts", recipients)
+    else:
+        await asyncio.to_thread(
+            mailer.send_email, recipients,
+            f"Tunnel Progress Summary – All contracts – {ts.when(day)}",
+            f"No tunnel progress updates were reported for {ts.when(day)}.\n",
+        )
+    logger.info("daily tunnel email sent for %s (%d updates)", day, len(rows))
+
+
+def next_daily_email(now: datetime) -> datetime | None:
+    """The next TUNNEL_DAILY_EMAIL_AT after `now`, site time. None if it is off."""
+    at = settings.TUNNEL_DAILY_EMAIL_AT.strip()
+    if not at:
+        return None
+    hour, minute = (int(p) for p in at.split(":"))
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return target if target > now else target + timedelta(days=1)
+
+
+async def daily_email_scheduler():
+    """Run forever: email every contract's summary at TUNNEL_DAILY_EMAIL_AT.
+
+    A restart after the time does not resend: that day's email is the one
+    already sent, or none if the container was down across it.
+    """
+    from ingest_batch import _sleep_until
+
+    while (target := next_daily_email(site_now())) is not None:
+        await _sleep_until(target)
+        try:
+            await send_daily_email(target.date())
+        except Exception:
+            logger.exception("daily tunnel email for %s failed", target.date())
 
 
 # ── /excel ────────────────────────────────────────────────────────────────────

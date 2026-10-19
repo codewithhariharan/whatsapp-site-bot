@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from config import settings
 from message_handler import handle_message
 from ingest_batch import scheduler
+from tunnel_handler import daily_email_scheduler
 
 logging.basicConfig(
     # INFO (not DEBUG): DEBUG logs full request/response headers, which include
@@ -22,11 +23,14 @@ logger = logging.getLogger("site_bot")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Batch logging at 00/06/12/18 site time. See ingest_batch.py.
-    task = asyncio.create_task(scheduler())
+    # The daily tunnel email at TUNNEL_DAILY_EMAIL_AT. See tunnel_handler.py.
+    tasks = [asyncio.create_task(scheduler()),
+             asyncio.create_task(daily_email_scheduler())]
     yield
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
+    for task in tasks:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 app = FastAPI(title="Site Bot", lifespan=lifespan)

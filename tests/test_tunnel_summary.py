@@ -4,7 +4,7 @@ and the /tunnel email built from it.
 The samples are from Tunnel_Progress_Test_Data.docx, the format the user set.
 """
 import asyncio
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -15,6 +15,7 @@ import tunnel_handler as th
 import tunnel_parser as tp
 import tunnel_summary as ts
 from config import settings
+from sitetime import SITE_TZ
 
 P103_DAY = """*TUNNEL PROGRESS UPDATE*
 *CONTRACT*: P103
@@ -184,19 +185,21 @@ def run(text, group_id=MASTER_GROUP):
 
 
 @pytest.mark.parametrize("command", ["/tunnel", "/tunnel updates", "/Tunnel update"])
-def test_master_emails_the_latest_day_for_every_contract(world, command):
+def test_master_emails_today_for_every_contract(world, command):
     run(command)
-    assert world["days"] == [(date(2026, 8, 15), None)]
+    assert world["days"] == [(date(2026, 8, 16), None)]
     assert world["caught_up"] == [[TUNNEL_GROUP]]
     [(to, subject)] = world["emails"]
     assert to == ["director@example.com"]
-    assert subject == "Tunnel Progress Summary – All contracts – 15 Aug 2026"
+    assert subject == "Tunnel Progress Summary – All contracts – 16 Aug 2026"
     assert "emailed to d…@example.com" in world["sent"][-1]
 
 
 @pytest.mark.parametrize("command, day", [
     ("/tunnel yesterday", date(2026, 8, 15)),
     ("/tunnel updates for 14 Aug", date(2026, 8, 14)),
+    ("/tunnel 5 jan", date(2026, 1, 5)),
+    ("/tunnel 5 Jan 2026", date(2026, 1, 5)),
 ])
 def test_another_day_can_be_asked_for(world, command, day):
     run(command)
@@ -205,8 +208,14 @@ def test_another_day_can_be_asked_for(world, command, day):
 
 def test_a_contract_group_emails_only_its_own(world):
     run("/tunnel", group_id=TUNNEL_GROUP)
-    assert world["days"] == [(date(2026, 8, 15), TUNNEL_GROUP)]
-    assert world["emails"][0][1] == "Tunnel Progress Summary – P103 – 15 Aug 2026"
+    assert world["days"] == [(date(2026, 8, 16), TUNNEL_GROUP)]
+    assert world["emails"][0][1] == "Tunnel Progress Summary – P103 – 16 Aug 2026"
+
+
+def test_a_day_with_no_updates_says_so(world, monkeypatch):
+    monkeypatch.setattr(db, "get_tunnel_progress_for_day", lambda d, g=None: [])
+    run("/tunnel")
+    assert world["emails"] == [] and "No tunnel updates report on" in world["sent"][-1]
 
 
 def test_a_model_failure_still_sends_the_figures(world, monkeypatch):
@@ -252,3 +261,41 @@ def test_excel_is_still_the_spreadsheet(world, monkeypatch):
     monkeypatch.setattr(th, "handle_tunnel_export", export)
     run("/excel")
     assert exported == [True] and world["emails"] == []
+
+
+# ── The daily email ───────────────────────────────────────────────────────────
+
+def test_the_daily_email_covers_every_contract_and_posts_nothing(world):
+    asyncio.run(th.send_daily_email(date(2026, 8, 16)))
+    assert world["caught_up"] == [[TUNNEL_GROUP]]
+    assert world["days"] == [(date(2026, 8, 16), None)]
+    assert world["emails"] == [(["director@example.com"],
+                                "Tunnel Progress Summary – All contracts – 16 Aug 2026")]
+    assert world["sent"] == []
+
+
+def test_a_quiet_day_still_sends_a_note(world, monkeypatch):
+    monkeypatch.setattr(db, "get_tunnel_progress_for_day", lambda d, g=None: [])
+    asyncio.run(th.send_daily_email(date(2026, 8, 16)))
+    [(to, subject)] = world["emails"]
+    assert subject == "Tunnel Progress Summary – All contracts – 16 Aug 2026"
+
+
+def test_the_daily_email_is_skipped_when_email_is_not_set_up(world, monkeypatch):
+    monkeypatch.setattr(settings, "TUNNEL_EMAIL_TO", "")
+    asyncio.run(th.send_daily_email(date(2026, 8, 16)))
+    assert world["emails"] == [] and world["caught_up"] == []
+
+
+@pytest.mark.parametrize("now, expected", [
+    (datetime(2026, 8, 16, 9, 0, tzinfo=SITE_TZ), datetime(2026, 8, 16, 18, 0, tzinfo=SITE_TZ)),
+    (datetime(2026, 8, 16, 18, 0, tzinfo=SITE_TZ), datetime(2026, 8, 17, 18, 0, tzinfo=SITE_TZ)),
+    (datetime(2026, 8, 16, 23, 30, tzinfo=SITE_TZ), datetime(2026, 8, 17, 18, 0, tzinfo=SITE_TZ)),
+])
+def test_the_daily_email_goes_at_six_pm(world, now, expected):
+    assert th.next_daily_email(now) == expected
+
+
+def test_the_daily_email_can_be_turned_off(world, monkeypatch):
+    monkeypatch.setattr(settings, "TUNNEL_DAILY_EMAIL_AT", "")
+    assert th.next_daily_email(datetime(2026, 8, 16, 9, 0, tzinfo=SITE_TZ)) is None

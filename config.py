@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     EMAIL_FROM: str = ""              # defaults to SMTP_USER
     TUNNEL_EMAIL_TO: str = ""
+    # Every contract's summary for the day is emailed at this site time (HH:MM).
+    # Empty turns the daily email off; /tunnel still works.
+    TUNNEL_DAILY_EMAIL_AT: str = "18:00"
 
     @property
     def tunnel_group_ids(self) -> set[str]:
