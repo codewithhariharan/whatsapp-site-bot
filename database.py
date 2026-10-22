@@ -962,3 +962,22 @@ def get_site_photos(group_id: str, ids: list[int]) -> list[dict]:
         """,
         (group_id, list(ids)),
     )
+
+
+def get_site_photo_logs(group_id: str, ids: list[int]) -> dict[int, tuple[str, str, str]]:
+    """{photo id: (main_location, sub_location, description) of its log} —
+    without the images, so a selection can be checked before the pictures are
+    fetched. A photo with no log is left out."""
+    if not ids:
+        return {}
+    rows = _fetch(
+        """
+        SELECT p.id, d.main_location, d.sub_location, d.description
+        FROM site_photos p
+        JOIN daily_logs d ON d.id = p.log_id
+        WHERE p.group_id = %s AND p.id = ANY(%s)
+        """,
+        (group_id, list(ids)),
+    )
+    return {r["id"]: (r["main_location"] or "", r["sub_location"] or "", r["description"] or "")
+            for r in rows}

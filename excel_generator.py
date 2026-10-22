@@ -532,7 +532,7 @@ def _write_photo_sheet(ws, photos: list[dict], title: str, shrunk: dict):
 
     if not photos:
         ws.cell(row=first_row + 1, column=1,
-                value="No photos found for this location in this period.").font = CELL_FONT
+                value="No photos found for this in this period.").font = CELL_FONT
         return
 
     for n, photo in enumerate(photos, start=1):

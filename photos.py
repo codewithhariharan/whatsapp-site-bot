@@ -90,33 +90,46 @@ TABLE site_photos  -- one row per photo posted to the group
     (the image itself is in a column you must NEVER select)
 
   A photo's location and description are its log's: JOIN daily_logs ON
-  daily_logs.id = site_photos.log_id. Use a LEFT JOIN and also match
-  site_photos.caption, so a photo whose caption was not filed as a log is not
-  missed."""
+  daily_logs.id = site_photos.log_id. A photo's location is ONLY its log's
+  main_location and sub_location, and its activity ONLY its log's
+  description — never its caption."""
 
 _PHOTO_SQL_SYSTEM = """You write ONE PostgreSQL SELECT that finds the photos a question asks for,
 from a construction site's record. Someone else fetches the pictures and puts
-each location asked about on its own tab of a spreadsheet.
+each tab you list on its own tab of a spreadsheet.
 
 {schema}
 
 RULES
 1. Emit exactly one SELECT. No INSERT/UPDATE/DELETE/DDL.
-2. List the locations the question asks about, in the order it names them
-   ("Exit 3 and U3-12" -> ["Exit 3", "U3-12"]). If it names none ("all photos
-   from yesterday"), use one entry describing the request, e.g. ["30 Sep 2026"].
-3. Write one branch per location, each tagged with that location's name
-   exactly as listed and its position, joined with UNION ALL:
+2. List the tabs the question asks for, in the order it names them. Each tab
+   has a name, a location and an activity:
+   - location: the place, exactly as asked ("Exit 3"), or null if none.
+   - activity: the work asked about, as a few words or stems any of which in
+     a description marks it ("waterproofing" -> ["waterproof", "membrane"]),
+     or [] if none.
+   "Exit 3 and U3-12" -> two tabs, locations only.
+   "waterproofing at Exit 3" -> one tab, location and activity.
+   "rebar photos" -> one tab, activity only, location null.
+   "all photos from yesterday" -> one tab named for the date, e.g.
+   "30 Sep 2026", location null, activity [].
+3. Write one branch per tab, each tagged with that tab's name exactly as
+   listed and its position, joined with UNION ALL:
      SELECT 'Exit 3' AS tab, 1 AS tab_order, site_photos.id AS photo_id,
             site_photos.sent_at
-     FROM site_photos LEFT JOIN daily_logs ON daily_logs.id = site_photos.log_id
+     FROM site_photos JOIN daily_logs ON daily_logs.id = site_photos.log_id
      WHERE (...) ...
    Return exactly those four columns — never the image column.
    Wrap each branch in parentheses and give it its own
    ORDER BY site_photos.sent_at LIMIT {per_location}.
-4. Match a place in main_location, sub_location AND caption, case-insensitive:
+4. A location is matched ONLY in main_location and sub_location:
      (daily_logs.main_location ILIKE '%Exit 3%' OR daily_logs.sub_location
-      ILIKE '%Exit 3%' OR site_photos.caption ILIKE '%Exit 3%')
+      ILIKE '%Exit 3%')
+   An activity is matched ONLY in description, with the tab's activity words:
+     (daily_logs.description ILIKE '%waterproof%' OR daily_logs.description
+      ILIKE '%membrane%')
+   A tab with both needs both (AND). Never match on the caption, and never
+   look for a location in the description or an activity in the locations.
 5. Filter dates on site_photos.sent_at in site time:
      (site_photos.sent_at AT TIME ZONE 'Asia/Singapore')::date >= '...'
    "The last two months" means from today minus two months up to today.
@@ -124,12 +137,18 @@ RULES
 7. Use NO bound parameters or placeholders; inline every literal.
 
 Respond ONLY with JSON, no explanation, no code fences:
-{{"sql": "...", "locations": ["Exit 3", "U3-12"], "period": "a short phrase for the dates, e.g. '30 Jul - 30 Sep 2026'"}}
+{{"sql": "...", "tabs": [{{"name": "Exit 3", "location": "Exit 3", "activity": []}}], "period": "a short phrase for the dates, e.g. '30 Jul - 30 Sep 2026'"}}
 
-EXAMPLE   (dates come from the user turn — never from this example)
+EXAMPLES   (dates come from the user turn — never from these examples)
 
 "show me the pictures of Exit 3 and U3-12 in the last two months"   (if today is 2026-09-30)
-{{"sql": "(SELECT 'Exit 3' AS tab, 1 AS tab_order, site_photos.id AS photo_id, site_photos.sent_at FROM site_photos LEFT JOIN daily_logs ON daily_logs.id = site_photos.log_id WHERE (daily_logs.main_location ILIKE '%Exit 3%' OR daily_logs.sub_location ILIKE '%Exit 3%' OR site_photos.caption ILIKE '%Exit 3%') AND (site_photos.sent_at AT TIME ZONE 'Asia/Singapore')::date >= '2026-07-30' ORDER BY site_photos.sent_at LIMIT {per_location}) UNION ALL (SELECT 'U3-12' AS tab, 2 AS tab_order, site_photos.id AS photo_id, site_photos.sent_at FROM site_photos LEFT JOIN daily_logs ON daily_logs.id = site_photos.log_id WHERE (daily_logs.main_location ILIKE '%U3-12%' OR daily_logs.sub_location ILIKE '%U3-12%' OR site_photos.caption ILIKE '%U3-12%') AND (site_photos.sent_at AT TIME ZONE 'Asia/Singapore')::date >= '2026-07-30' ORDER BY site_photos.sent_at LIMIT {per_location}) ORDER BY tab_order, sent_at", "locations": ["Exit 3", "U3-12"], "period": "30 Jul - 30 Sep 2026"}}
+{{"sql": "(SELECT 'Exit 3' AS tab, 1 AS tab_order, site_photos.id AS photo_id, site_photos.sent_at FROM site_photos JOIN daily_logs ON daily_logs.id = site_photos.log_id WHERE (daily_logs.main_location ILIKE '%Exit 3%' OR daily_logs.sub_location ILIKE '%Exit 3%') AND (site_photos.sent_at AT TIME ZONE 'Asia/Singapore')::date >= '2026-07-30' ORDER BY site_photos.sent_at LIMIT {per_location}) UNION ALL (SELECT 'U3-12' AS tab, 2 AS tab_order, site_photos.id AS photo_id, site_photos.sent_at FROM site_photos JOIN daily_logs ON daily_logs.id = site_photos.log_id WHERE (daily_logs.main_location ILIKE '%U3-12%' OR daily_logs.sub_location ILIKE '%U3-12%') AND (site_photos.sent_at AT TIME ZONE 'Asia/Singapore')::date >= '2026-07-30' ORDER BY site_photos.sent_at LIMIT {per_location}) ORDER BY tab_order, sent_at", "tabs": [{{"name": "Exit 3", "location": "Exit 3", "activity": []}}, {{"name": "U3-12", "location": "U3-12", "activity": []}}], "period": "30 Jul - 30 Sep 2026"}}
+
+"pictures of waterproofing at Exit 3 this month"   (if today is 2026-09-30)
+{{"sql": "(SELECT 'Exit 3 waterproofing' AS tab, 1 AS tab_order, site_photos.id AS photo_id, site_photos.sent_at FROM site_photos JOIN daily_logs ON daily_logs.id = site_photos.log_id WHERE (daily_logs.main_location ILIKE '%Exit 3%' OR daily_logs.sub_location ILIKE '%Exit 3%') AND (daily_logs.description ILIKE '%waterproof%' OR daily_logs.description ILIKE '%membrane%') AND (site_photos.sent_at AT TIME ZONE 'Asia/Singapore')::date >= '2026-09-01' ORDER BY site_photos.sent_at LIMIT {per_location}) ORDER BY tab_order, sent_at", "tabs": [{{"name": "Exit 3 waterproofing", "location": "Exit 3", "activity": ["waterproof", "membrane"]}}], "period": "1 - 30 Sep 2026"}}
+
+"rebar photos from last week"   (if today is 2026-09-30)
+{{"sql": "(SELECT 'Rebar' AS tab, 1 AS tab_order, site_photos.id AS photo_id, site_photos.sent_at FROM site_photos JOIN daily_logs ON daily_logs.id = site_photos.log_id WHERE (daily_logs.description ILIKE '%rebar%' OR daily_logs.description ILIKE '%reinforcement%') AND (site_photos.sent_at AT TIME ZONE 'Asia/Singapore')::date BETWEEN '2026-09-21' AND '2026-09-27' ORDER BY site_photos.sent_at LIMIT {per_location}) ORDER BY tab_order, sent_at", "tabs": [{{"name": "Rebar", "location": null, "activity": ["rebar", "reinforcement"]}}], "period": "21 - 27 Sep 2026"}}
 """
 
 _TABLES = ("daily_logs", "site_photos")
@@ -172,16 +191,76 @@ def find_photos(group_id: str, question: str) -> tuple[list[tuple[str, list[dict
     raise RuntimeError(f"photo query failed twice: {error}")
 
 
+def _location_pattern(location: str) -> re.Pattern:
+    """`location` as a whole place name: case-insensitive, spaces, hyphens and
+    slashes interchangeable or absent ("U3-12" ~ "u3 12"), and not part of a
+    longer name ("Exit 3" is not in "Exit 30")."""
+    parts = [re.escape(p) for p in re.split(r"[\s\-/]+", location.strip()) if p]
+    return re.compile(r"(?<![A-Za-z0-9])" + r"[\s\-/]*".join(parts) + r"(?![A-Za-z0-9])", re.I)
+
+
+def in_location(location: str, main: str, sub: str) -> bool:
+    """Is `location` in this log's main_location or sub_location?
+
+    Main and sub together count too: "Zone 4 P46" is filed either as main
+    'Zone 4 P46' or as main 'Zone 4' + sub 'P46'."""
+    pattern = _location_pattern(location)
+    return any(pattern.search(text) for text in (main, sub, f"{main} {sub}") if text.strip())
+
+
+def is_activity(words: list[str], description: str) -> bool:
+    """Does this description mention any of the activity's words? Each must
+    start a word, so "waterproof" finds "waterproofing" but "cast" does not
+    find "forecast"."""
+    for word in words:
+        parts = [re.escape(p) for p in word.split()]
+        if parts and re.search(r"(?<![A-Za-z0-9])" + r"\s+".join(parts), description, re.I):
+            return True
+    return False
+
+
+def _tab_filters(plan: dict) -> dict[str, tuple[str | None, list[str]]]:
+    """{tab name: (location or None, activity words)} in the order asked."""
+    filters = {}
+    for tab in plan.get("tabs") or []:
+        if not isinstance(tab, dict) or not str(tab.get("name") or "").strip():
+            continue
+        location = str(tab.get("location") or "").strip() or None
+        activity = [str(w).strip() for w in tab.get("activity") or [] if str(w).strip()]
+        filters[str(tab["name"]).strip()] = (location, activity)
+    return filters
+
+
 def _sections(group_id: str, rows: list[dict], plan: dict):
-    """Group the query's rows into one section per location, capped."""
-    order = [str(loc).strip() for loc in plan.get("locations") or [] if str(loc).strip()]
-    by_tab: dict[str, list[int]] = {loc: [] for loc in order}
+    """Group the query's rows into one section per tab, capped.
+
+    A photo stays on a tab only if its log matches what the tab asked for —
+    whatever the model's SQL matched: the location in main_location or
+    sub_location, the activity in the description, both when both were
+    asked. A caption is never enough, nor is a photo with no log."""
+    filters = _tab_filters(plan)
+    by_tab: dict[str, list[int]] = {name: [] for name in filters}
     for row in rows:
         tab = str(row.get("tab") or "Photos").strip()
         if tab not in by_tab:
             by_tab[tab] = []          # a tab the model used but did not list
-        if row.get("photo_id") is not None:
+        if row.get("photo_id") is not None and row["photo_id"] not in by_tab[tab]:
             by_tab[tab].append(row["photo_id"])
+
+    def keep(tab: str, log: tuple[str, str, str] | None) -> bool:
+        # A tab the model did not list is held to its name as a location.
+        location, activity = filters.get(tab, (tab, []))
+        if location is None and not activity:
+            return True               # dates only: nothing to check
+        if log is None:
+            return False
+        main, sub, description = log
+        return ((location is None or in_location(location, main, sub))
+                and (not activity or is_activity(activity, description)))
+
+    logs = db.get_site_photo_logs(group_id, sorted({i for ids in by_tab.values() for i in ids}))
+    for tab, ids in by_tab.items():
+        ids[:] = [i for i in ids if keep(tab, logs.get(i))]
 
     capped = False
     total = 0

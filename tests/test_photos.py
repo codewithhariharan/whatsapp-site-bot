@@ -168,7 +168,10 @@ def test_each_batch_links_photos_to_the_logs_it_filed(monkeypatch):
 
 # ── Finding ───────────────────────────────────────────────────────────────────
 
-PLAN = ('{"sql": "SELECT 1", "locations": ["Exit 3", "U3-12", "RS"], '
+PLAN = ('{"sql": "SELECT 1", "tabs": ['
+        '{"name": "Exit 3", "location": "Exit 3", "activity": []}, '
+        '{"name": "U3-12", "location": "U3-12", "activity": []}, '
+        '{"name": "RS", "location": "RS", "activity": []}], '
         '"period": "30 Jul - 30 Sep 2026"}')
 
 
@@ -184,6 +187,8 @@ def test_find_photos_groups_by_location_in_the_order_asked(monkeypatch):
     monkeypatch.setattr(db, "run_readonly_query", run)
     monkeypatch.setattr(db, "get_site_photos", lambda g, ids: [
         {"id": i, "image": b"x"} for i in sorted(ids)])
+    monkeypatch.setattr(db, "get_site_photo_logs", lambda g, ids: {
+        7: ("Exit 3", "", ""), 9: ("Exit 3", "U3-12", ""), 12: ("Zone 2", "U3-12", "")})
 
     sections, period, capped = photos.find_photos(SITE_GROUP, "pictures of Exit 3, U3-12 and RS")
     assert seen["group_id"] == SITE_GROUP and seen["scope_to_group"] is True
@@ -205,9 +210,97 @@ def test_the_caps_apply_per_location_and_in_all(monkeypatch):
         [{"tab": "Exit 3", "photo_id": i} for i in (1, 2, 3)]
         + [{"tab": "U3-12", "photo_id": i} for i in (4, 5)], False))
     monkeypatch.setattr(db, "get_site_photos", lambda g, ids: [{"id": i} for i in ids])
+    monkeypatch.setattr(db, "get_site_photo_logs", lambda g, ids: {
+        i: ("Exit 3", "U3-12", "") for i in ids})
     sections, _, capped = photos.find_photos(SITE_GROUP, "q")
     assert [[p["id"] for p in found] for _loc, found in sections] == [[1, 2], [4], []]
     assert capped is True
+
+
+def test_only_photos_whose_main_or_sub_location_holds_the_place_are_kept(monkeypatch):
+    # The model's SQL matched more than it should have: a caption that only
+    # mentions Exit 3, a photo with no log, and Exit 30.
+    monkeypatch.setattr(photos.llm, "generate", lambda *a, **k: PLAN)
+    monkeypatch.setattr(db, "run_readonly_query", lambda *a, **k: (
+        [{"tab": "Exit 3", "photo_id": i} for i in (1, 2, 3, 4, 5)]
+        + [{"tab": "U3-12", "photo_id": i} for i in (6, 7)], False))
+    monkeypatch.setattr(db, "get_site_photo_logs", lambda g, ids: {
+        1: ("Exit 3", "", ""),                  # in main_location
+        2: ("Zone 4", "exit 3 slab", ""),       # in sub_location
+        3: ("Zone 2", "P12", "Exit 3 photos"),  # only the description said Exit 3
+        4: ("Exit 30", "", ""),                 # a different place
+        6: ("U3 12", "", ""),
+        7: ("Zone 5", "U3-12A", ""),
+    })                                          # 5: no log
+    monkeypatch.setattr(db, "get_site_photos", lambda g, ids: [{"id": i} for i in sorted(ids)])
+    sections, _, _ = photos.find_photos(SITE_GROUP, "pictures of Exit 3, U3-12 and RS")
+    assert [(loc, [p["id"] for p in found]) for loc, found in sections] == [
+        ("Exit 3", [1, 2]), ("U3-12", [6]), ("RS", [])]
+
+
+def test_a_request_naming_no_place_is_not_filtered_by_location(monkeypatch):
+    monkeypatch.setattr(photos.llm, "generate", lambda *a, **k: (
+        '{"sql": "SELECT 1", "tabs": [{"name": "30 Sep 2026", "location": null, '
+        '"activity": []}], "period": "30 Sep 2026"}'))
+    monkeypatch.setattr(db, "run_readonly_query", lambda *a, **k: (
+        [{"tab": "30 Sep 2026", "photo_id": i} for i in (1, 2)], False))
+    monkeypatch.setattr(db, "get_site_photo_logs", lambda g, ids: {})   # no logs at all
+    monkeypatch.setattr(db, "get_site_photos", lambda g, ids: [{"id": i} for i in sorted(ids)])
+    sections, _, _ = photos.find_photos(SITE_GROUP, "all photos from yesterday")
+    assert [[p["id"] for p in found] for _loc, found in sections] == [[1, 2]]
+
+
+LOGS = {
+    1: ("Exit 3", "", "Waterproofing membrane laid at base slab"),
+    2: ("Exit 3", "", "Rebar fixing for wall"),
+    3: ("Zone 2", "", "Waterproofing to roof slab"),
+    4: ("Zone 2", "Exit 3", "Applied waterproof coating"),
+    5: ("Zone 2", "", "Exit 3 waterproofing"),    # Exit 3 only in the description
+    6: ("Zone 1", "", "Weather forecast checked"),
+}
+
+
+def _activity_plan(monkeypatch, tab):
+    monkeypatch.setattr(photos.llm, "generate", lambda *a, **k: (
+        '{"sql": "SELECT 1", "tabs": [' + tab + '], "period": "Sep 2026"}'))
+    monkeypatch.setattr(db, "run_readonly_query", lambda *a, **k: (
+        [{"tab": "T", "photo_id": i} for i in LOGS], False))
+    monkeypatch.setattr(db, "get_site_photo_logs", lambda g, ids: LOGS)
+    monkeypatch.setattr(db, "get_site_photos", lambda g, ids: [{"id": i} for i in sorted(ids)])
+    sections, _, _ = photos.find_photos(SITE_GROUP, "q")
+    return [p["id"] for p in sections[0][1]]
+
+
+def test_location_and_activity_need_both(monkeypatch):
+    # The place in main/sub location AND the work in the description.
+    assert _activity_plan(monkeypatch, '{"name": "T", "location": "Exit 3", '
+                          '"activity": ["waterproof", "membrane"]}') == [1, 4]
+
+
+def test_activity_alone_looks_only_at_the_description(monkeypatch):
+    assert _activity_plan(monkeypatch, '{"name": "T", "location": null, '
+                          '"activity": ["waterproof", "membrane"]}') == [1, 3, 4, 5]
+
+
+def test_an_activity_word_must_start_a_word(monkeypatch):
+    assert _activity_plan(monkeypatch, '{"name": "T", "location": null, '
+                          '"activity": ["cast"]}') == []
+
+
+@pytest.mark.parametrize("location, main, sub, expected", [
+    ("Exit 3", "Exit 3", "", True),
+    ("exit 3", "EXIT 3 shaft", "", True),
+    ("Exit 3", "Zone 1", "Exit 3", True),
+    ("Exit 3", "Exit 30", "", False),
+    ("Exit 3", "", "", False),
+    ("Zone 4 P46", "Zone 4", "P46", True),       # split across main and sub
+    ("Zone 4 P46", "Zone 4 P46", "", True),
+    ("Zone 4 P46", "Zone 4", "P47", False),
+    ("U3-12", "U3 12", "", True),
+    ("P4", "P46", "", False),
+])
+def test_in_location(location, main, sub, expected):
+    assert photos.in_location(location, main, sub) is expected
 
 
 # ── The Excel sheet ───────────────────────────────────────────────────────────
