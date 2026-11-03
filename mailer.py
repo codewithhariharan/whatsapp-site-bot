@@ -7,6 +7,7 @@ time, on request — so there is no mail SDK to install or keep current.
 import smtplib
 from email.message import EmailMessage
 
+import sandbox
 from config import settings
 
 
@@ -30,6 +31,10 @@ def send_email(recipients: list[str], subject: str, text: str,
     """
     if not is_configured(recipients):
         raise EmailNotConfigured("SMTP_HOST and a recipient are required")
+    # The dashboard's test console shows the email instead of sending it.
+    if sandbox.capture({"type": "email", "to": recipients, "subject": subject,
+                        "text": text, "html": html}):
+        return
 
     sender = settings.EMAIL_FROM or settings.SMTP_USER
     msg = EmailMessage()

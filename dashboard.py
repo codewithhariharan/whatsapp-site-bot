@@ -431,4 +431,84 @@ def ask(body: AskRequest, user: dict = Depends(current_user)):
                             detail="Couldn't answer that just now. Try rephrasing it.")
 
 
+
+# ── Console ───────────────────────────────────────────────────────────────────
+#
+# The bot's commands, run for real against the record, with the replies shown
+# here instead of posted to WhatsApp. sandbox.py keeps it from touching the
+# groups: no messages, no email, each tester's own /setorder and /daily
+# session, and nothing filed as a post.
+
+# What a site-group message may be in the console. Anything else would be a
+# post, and a test must not become one. /dwall only bare: with text after it,
+# it is a panel entry for the parser.
+_SITE_COMMANDS = ("/help", "/setorder", "/daily", "/reorder", "/confirm",
+                  "/delete", "/excel", "/ask")
+
+# Commands are cheaper than /ask but /ask runs through here too.
+_console_limiter = RateLimiter(30, 600, 1000)
+
+
+class ConsoleRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    scope: str = Field("site", pattern="^(site|tunnel)$")
+
+
+def _console_item(item: dict) -> dict:
+    if item["type"] == "file":
+        import base64
+        return {"type": "file", "filename": item["filename"], "caption": item["caption"],
+                "data": base64.b64encode(item["data"]).decode()}
+    if item["type"] == "email":
+        from tunnel_handler import _mask
+        return {"type": "email", "subject": item["subject"],
+                "to": [_mask(a) for a in item["to"]],
+                "html": item["html"], "text": item["text"]}
+    return item
+
+
+@api.post("/api/console")
+async def console(body: ConsoleRequest, user: dict = Depends(current_user)):
+    import sandbox
+    from message_handler import handle_message
+
+    text = body.text.strip()
+    lower = text.lower()
+    if body.scope == "tunnel":
+        # The master group's view: every contract. Nothing said there is filed.
+        group_id = sorted(settings.master_group_ids)[0] if settings.master_group_ids else ""
+        if not group_id:
+            raise HTTPException(status_code=503, detail="The master group is not set up.")
+    else:
+        group_id = settings.DASHBOARD_SITE_GROUP_ID.strip()
+        if not group_id:
+            raise HTTPException(status_code=503, detail="The site group is not set up.")
+        if not (lower.startswith(_SITE_COMMANDS) or lower == "/dwall"):
+            raise HTTPException(
+                status_code=400,
+                detail="Only commands run here — a plain message would be logged as a real "
+                       "site post. Try /help.")
+
+    refusal = _console_limiter.allow(user["email"])
+    if refusal:
+        raise HTTPException(status_code=429, detail=refusal)
+
+    box: list[dict] = []
+    outbox_token = sandbox.outbox.set(box)
+    state_token = sandbox.state_group.set(f"dashboard:{user['id']}")
+    try:
+        await handle_message(group_id, user.get("name") or user["email"], "", text)
+    except Exception:
+        logger.exception("dashboard console failed: %r", text)
+        box.append({"type": "text", "text": "⚠️ The command failed. The error is in the "
+                                            "server log."})
+    finally:
+        sandbox.state_group.reset(state_token)
+        sandbox.outbox.reset(outbox_token)
+
+    if not box:
+        box.append({"type": "text", "text": "(The bot sent no reply.)"})
+    return {"replies": [_console_item(i) for i in box]}
+
+
 router.include_router(api)

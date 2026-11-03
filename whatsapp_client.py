@@ -10,6 +10,7 @@ import base64
 import logging
 import httpx
 import mimetypes
+import sandbox
 from config import settings
 
 logger = logging.getLogger("site_bot")
@@ -57,11 +58,16 @@ def _check(response: httpx.Response, action: str):
 
 async def send_message(to: str, text: str):
     """Send a plain text message into a group."""
+    if sandbox.capture({"type": "text", "text": text}):
+        return
     await _bridge_post("/send", {"to": to, "text": text})
 
 
 async def send_document(to: str, file_bytes: bytes, filename: str, caption: str = ""):
     """Send a file as a document message, base64-encoded to the bridge."""
+    if sandbox.capture({"type": "file", "filename": filename, "data": file_bytes,
+                        "caption": caption}):
+        return
     # The bridge uploads the file to WhatsApp before it answers, so this
     # timeout has to cover the upload, not just the local POST. The full
     # /excel export is ~1.7 MB (~2.3 MB base64) and 30s is not enough

@@ -194,6 +194,14 @@ td .act .btn { padding: 4px 10px; font-size: 12.5px; }
 .btn.danger.armed { background: var(--bad); border-color: var(--bad); color: #fff; }
 .users tbody tr { cursor: default; }
 
+.console { max-width: 900px; margin: 0 auto; }
+.console .log { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+.console .msg.q { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.filecard { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.filecard .fname { font-weight: 600; }
+.mail { width: 100%; max-width: 100%; }
+.mail iframe { width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 8px; background: #fff; margin-top: 8px; }
+
 @media (max-width: 640px) {
   header.top, main { padding-left: 16px; padding-right: 16px; }
   .updated { margin-left: 0; }
@@ -316,6 +324,7 @@ const VIEWS = [
   ["tunnel_flags", "Flagged items"],
   ["photos", "Photos"],
   ["ask", "Ask"],
+  ["console", "Console"],
 ];
 const tableState = {};
 let current = null;
@@ -343,6 +352,7 @@ function show(v) {
   if (v === "photos") return showPhotos();
   if (v === "ask") return showAsk();
   if (v === "users") return showUsers();
+  if (v === "console") return showConsole();
   return showTable(v);
 }
 
@@ -664,6 +674,99 @@ async function send() {
   answer.pending = false;
   if ($("#send")) $("#send").disabled = false;
   renderThread();
+}
+
+// ── Console ──────────────────────────────────────────────────────────────────
+
+const CONSOLE_CHIPS = {
+  site: ["/help", "/daily", "/reorder 2 1", "/delete 1", "/confirm", "/excel",
+         `/excel ${MONTHS[new Date().getMonth()]} ${new Date().getFullYear()}`, "/dwall",
+         "/ask what was done yesterday?"],
+  tunnel: ["/help", "/!!", "/!! yesterday", "/tunnel", "/tunnel yesterday", "/excel",
+           "How far along is each drive?"],
+};
+const consoleState = {scope: "site", log: []};
+
+function downloadFile(f) {
+  const bytes = Uint8Array.from(atob(f.data), c => c.charCodeAt(0));
+  const url = URL.createObjectURL(new Blob([bytes]));
+  const a = Object.assign(document.createElement("a"), {href: url, download: f.filename});
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10e3);
+}
+
+function renderConsoleLog() {
+  const el = $("#clog");
+  if (!el) return;
+  el.innerHTML = consoleState.log.map((m, i) => {
+    if (m.role === "q") return `<div class="msg q"><div class="tag">${m.scope === "tunnel" ? "Tunnel · all contracts" : "Site · CR106"}</div>${esc(m.text)}</div>`;
+    if (m.pending) return `<div class="msg a"><span class="spinner"></span>Running…</div>`;
+    if (m.error) return `<div class="msg a err">${esc(m.error)}</div>`;
+    if (m.type === "file") return `<div class="msg a filecard"><span>📎 <span class="fname">${esc(m.filename)}</span>
+      ${m.caption ? `<br><span style="color:var(--muted)">${renderWhatsApp(m.caption)}</span>` : ""}</span>
+      <button class="btn primary" data-dl="${i}">Download</button></div>`;
+    if (m.type === "email") return `<div class="msg a mail" style="white-space:normal">
+      📧 <b>Not sent</b> — this is the email /tunnel would send to ${esc(m.to.join(", "))}.<br>
+      <b>${esc(m.subject)}</b><iframe sandbox="" data-mail="${i}" title="Email preview"></iframe></div>`;
+    return `<div class="msg a">${renderWhatsApp(m.text)}</div>`;
+  }).join("");
+  // srcdoc set from script so the email HTML never passes through innerHTML.
+  el.querySelectorAll("iframe[data-mail]").forEach(f => {
+    const m = consoleState.log[+f.dataset.mail];
+    f.srcdoc = m.html || `<pre>${esc(m.text)}</pre>`;
+  });
+  el.scrollIntoView({block: "end"});
+}
+
+function showConsole() {
+  $("#view").innerHTML = `<div class="console">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div><b>Console</b><div style="color:var(--muted);font-size:13px">
+          Run the bot's WhatsApp commands on the real record. Nothing is posted to the groups and no
+          email is sent; your /setorder and /daily → /reorder → /confirm session are yours alone.</div></div>
+        <div class="scope" id="cscope"><button data-s="site">Site</button><button data-s="tunnel">Tunnel</button></div>
+      </div>
+      <div class="askbox"><textarea id="ctext" rows="2" maxlength="2000" placeholder="/daily"></textarea>
+        <button class="btn primary" id="crun">Send</button></div>
+      <div class="chips" id="cchips"></div>
+    </div>
+    <div class="log" id="clog"></div></div>`;
+
+  const setScope = s => {
+    consoleState.scope = s;
+    for (const b of $("#cscope").children) b.classList.toggle("on", b.dataset.s === s);
+    $("#cchips").innerHTML = CONSOLE_CHIPS[s].map(x => `<button class="chip">${esc(x)}</button>`).join("");
+  };
+  $("#cscope").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setScope(b.dataset.s); });
+  $("#cchips").addEventListener("click", e => { const c = e.target.closest(".chip"); if (c) { $("#ctext").value = c.textContent; $("#ctext").focus(); } });
+  $("#crun").addEventListener("click", runConsole);
+  $("#ctext").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runConsole(); } });
+  $("#clog").addEventListener("click", e => {
+    const b = e.target.closest("button[data-dl]");
+    if (b) downloadFile(consoleState.log[+b.dataset.dl]);
+  });
+  setScope(consoleState.scope);
+  renderConsoleLog();
+}
+
+async function runConsole() {
+  const text = $("#ctext").value.trim();
+  if (!text) return;
+  $("#ctext").value = "";
+  $("#crun").disabled = true;
+  const scope = consoleState.scope;
+  consoleState.log.push({role: "q", text, scope});
+  const pending = {role: "a", pending: true};
+  consoleState.log.push(pending);
+  renderConsoleLog();
+  let replies;
+  try { replies = (await post("/api/console", {text, scope})).replies; }
+  catch (e) { replies = [{error: e.message}]; }
+  consoleState.log.splice(consoleState.log.indexOf(pending), 1,
+                          ...replies.map(r => ({role: "a", ...r})));
+  if ($("#crun")) $("#crun").disabled = false;
+  renderConsoleLog();
 }
 
 // ── Users (admins only) ──────────────────────────────────────────────────────

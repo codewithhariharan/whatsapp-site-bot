@@ -14,6 +14,7 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
+import sandbox
 from config import settings
 
 
@@ -98,6 +99,9 @@ def upsert_group(group_id: str, group_name: str = None):
 
 def enqueue_message(group_id: str, sender_name: str, sender_number: str, text: str):
     """Hold a post for the next batch run. See migrations/003_pending_messages.sql."""
+    if sandbox.active():
+        # A test must never become a real post. See sandbox.py.
+        raise RuntimeError("the dashboard console cannot queue posts")
     _execute(
         """
         INSERT INTO pending_messages (group_id, sender_name, sender_number, text)
@@ -142,6 +146,7 @@ def mark_message(message_id: int, status: str, error: str | None = None):
 
 def set_location_order(group_id: str, locations: list[str]):
     """Replace the location order for a group."""
+    group_id = sandbox.state_key(group_id)
     # One transaction: the delete and the insert succeed or fail together.
     # The Supabase version issued two independent calls and could leave a
     # group with no locations if the second one failed.
@@ -160,15 +165,20 @@ def set_location_order(group_id: str, locations: list[str]):
 
 
 def get_location_order(group_id: str) -> list[str]:
-    rows = _fetch(
-        """
-        SELECT location_name FROM location_order
-        WHERE group_id = %s
-        ORDER BY order_index
-        """,
-        (group_id,),
-    )
-    return [r["location_name"] for r in rows]
+    # In the dashboard's console a tester's own /setorder wins; until they set
+    # one, they see the group's.
+    for key in dict.fromkeys((sandbox.state_key(group_id), group_id)):
+        rows = _fetch(
+            """
+            SELECT location_name FROM location_order
+            WHERE group_id = %s
+            ORDER BY order_index
+            """,
+            (key,),
+        )
+        if rows:
+            return [r["location_name"] for r in rows]
+    return []
 
 
 # ── Daily logs ────────────────────────────────────────────────────────────────
@@ -248,6 +258,7 @@ def get_all_logs(group_id: str) -> list[dict]:
 # ── Reorder sessions ──────────────────────────────────────────────────────────
 
 def save_reorder_session(group_id: str, session_date: date, ordered_logs: list[dict]):
+    group_id = sandbox.state_key(group_id)
     _execute(
         """
         INSERT INTO reorder_sessions (group_id, session_date, ordered_logs)
@@ -261,12 +272,14 @@ def save_reorder_session(group_id: str, session_date: date, ordered_logs: list[d
 
 
 def get_reorder_session(group_id: str) -> dict | None:
+    group_id = sandbox.state_key(group_id)
     rows = _fetch(
         "SELECT * FROM reorder_sessions WHERE group_id = %s", (group_id,))
     return rows[0] if rows else None
 
 
 def clear_reorder_session(group_id: str):
+    group_id = sandbox.state_key(group_id)
     _execute("DELETE FROM reorder_sessions WHERE group_id = %s", (group_id,))
 
 

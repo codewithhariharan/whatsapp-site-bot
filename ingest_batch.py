@@ -26,6 +26,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 import database as db
+import sandbox
 from config import settings
 from llm import is_transient
 from message_parser import classify_and_parse
@@ -261,7 +262,9 @@ async def catch_up(group_id: str | list[str]) -> None:
     the next run.
     """
     group_ids = [group_id] if isinstance(group_id, str) else list(group_id)
-    if not group_ids:
+    if not group_ids or sandbox.active():
+        # The dashboard's console answers from the record as the batches
+        # left it — the same record its tables show. See sandbox.py.
         return
     try:
         await run_batch(label="on-demand", group_ids=group_ids)
