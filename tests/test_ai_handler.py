@@ -41,7 +41,7 @@ class TestGroupScopeGuard:
     def test_unscoped_query_is_retried_with_an_explanation(self):
         calls = []
 
-        def fake_write(question, previous_error=None, previous_sql=None):
+        def fake_write(question, previous_error=None, previous_sql=None, web=False):
             calls.append(previous_error)
             return {"sql": "SELECT 1 FROM daily_logs"}  # never scoped
 
@@ -71,7 +71,7 @@ class TestRetryOnDatabaseError:
     def test_postgres_error_is_fed_back_to_the_model(self):
         seen = []
 
-        def fake_write(question, previous_error=None, previous_sql=None):
+        def fake_write(question, previous_error=None, previous_sql=None, web=False):
             seen.append(previous_error)
             return {"sql": SCOPED}
 
@@ -121,7 +121,7 @@ class TestResultRendering:
     def test_result_block_carries_the_query_and_rows(self):
         with patch.object(ai_handler, "_write_sql", return_value={"sql": SCOPED}), \
              patch.object(db, "run_readonly_query", return_value=([{"n": 40024}], False)):
-            block, truncated, shown = ai_handler._run_sql_path("G", "how many entries?")
+            block, truncated, shown, *_ = ai_handler._run_sql_path("G", "how many entries?")
         assert "40024" in block
         assert "daily_logs" in block          # the query itself is shown
         assert truncated is False
@@ -130,7 +130,7 @@ class TestResultRendering:
         rows = [{"i": i} for i in range(300)]
         with patch.object(ai_handler, "_write_sql", return_value={"sql": SCOPED}), \
              patch.object(db, "run_readonly_query", return_value=(rows, True)):
-            block, truncated, shown = ai_handler._run_sql_path("G", "list everything")
+            block, truncated, shown, *_ = ai_handler._run_sql_path("G", "list everything")
         assert truncated is True
         assert "may have matched more" in block
 
@@ -140,7 +140,7 @@ class TestResultRendering:
         rows = [{"description": "x" * 1000} for _ in range(50)]
         with patch.object(ai_handler, "_write_sql", return_value={"sql": SCOPED}), \
              patch.object(db, "run_readonly_query", return_value=(rows, False)):
-            block, truncated, shown = ai_handler._run_sql_path("G", "activities on 30 Sep")
+            block, truncated, shown, *_ = ai_handler._run_sql_path("G", "activities on 30 Sep")
         assert shown < 50
         assert truncated is True
 
@@ -149,14 +149,14 @@ class TestResultRendering:
         rows = [{"i": i} for i in range(ai_handler._MAX_RESULT_ROWS)]
         with patch.object(ai_handler, "_write_sql", return_value={"sql": SCOPED}), \
              patch.object(db, "run_readonly_query", return_value=(rows, False)):
-            _, truncated, _ = ai_handler._run_sql_path("G", "activities on 30 Sep")
+            _, truncated, *_ = ai_handler._run_sql_path("G", "activities on 30 Sep")
         assert truncated is True
 
     def test_a_short_listing_is_not_called_partial(self):
         rows = [{"i": i} for i in range(29)]
         with patch.object(ai_handler, "_write_sql", return_value={"sql": SCOPED}), \
              patch.object(db, "run_readonly_query", return_value=(rows, False)):
-            block, truncated, shown = ai_handler._run_sql_path("G", "activities on 30 Sep")
+            block, truncated, shown, *_ = ai_handler._run_sql_path("G", "activities on 30 Sep")
         assert (truncated, shown) == (False, 29)
         assert "matched more" not in block
 
@@ -192,13 +192,14 @@ class TestAnswerQueryProvenance:
         return answer, sent["content"]
 
     def test_sql_path_states_the_result_is_complete(self):
-        answer, prompt = self._run(("RESULT — 1 row(s):\n[{\"n\":40024}]", False, 1))
+        answer, prompt = self._run(("RESULT — 1 row(s):\n[{\"n\":40024}]", False, 1,
+                                    [{"n": 40024}], "SELECT"))
         assert answer == "answer"
         assert "ENTIRE record" in prompt
         assert "that figure is complete" in prompt
 
     def test_truncated_sql_path_says_the_listing_is_partial(self):
-        _, prompt = self._run(("RESULT", True, 5))
+        _, prompt = self._run(("RESULT", True, 5, [{}] * 5, "SELECT"))
         assert "listing is partial" in prompt
 
     def test_fallback_path_warns_against_totals(self):
@@ -208,7 +209,7 @@ class TestAnswerQueryProvenance:
         assert "Do not give totals" in prompt
 
     def test_answer_is_whatsapp_formatted(self):
-        _, prompt = self._run(("RESULT", False, 5))
+        _, prompt = self._run(("RESULT", False, 5, [{}] * 5, "SELECT"))
         assert "single asterisks" in prompt
         assert "Never use #, ##, or **" in prompt
 
@@ -242,7 +243,7 @@ class TestAnswerModelRouting:
             picked["model"] = kwargs["model"]
             return "answer"
 
-        result = ("RESULT", False, rows_shown) if sql_result else None
+        result = ("RESULT", False, rows_shown, [{}] * rows_shown, "SELECT") if sql_result else None
         with patch.object(ai_handler, "_run_sql_path", return_value=result), \
              patch.object(ai_handler, "_keyword_fallback", return_value="DATA"), \
              patch.object(ai_handler.llm, "generate", side_effect=fake_generate):
@@ -340,7 +341,7 @@ class TestAnswerLayout:
             sent["prompt"] = prompt
             return "answer"
 
-        with patch.object(ai_handler, "_run_sql_path", return_value=("RESULT", False, 5)), \
+        with patch.object(ai_handler, "_run_sql_path", return_value=("RESULT", False, 5, [{}] * 5, "SELECT")), \
              patch.object(ai_handler.llm, "generate", side_effect=fake_generate):
             ai_handler.answer_query("G", "what was cast yesterday?")
         return sent["prompt"]
@@ -369,7 +370,7 @@ class TestAnswerLayout:
             sent.update(kwargs)
             return "answer"
 
-        with patch.object(ai_handler, "_run_sql_path", return_value=("RESULT", False, 120)), \
+        with patch.object(ai_handler, "_run_sql_path", return_value=("RESULT", False, 120, [{}] * 120, "SELECT")), \
              patch.object(ai_handler.llm, "generate", side_effect=fake_generate):
             ai_handler.answer_query("G", "activities on 30 Sep")
         assert sent["max_tokens"] >= 120 * 40
@@ -383,3 +384,53 @@ class TestSqlPromptForTimeAndConflicts:
     def test_rows_carry_logged_at_so_each_entry_shows_its_time(self):
         assert "include logged_at" in ai_handler._SCHEMA
         assert "Never drop or deduplicate" in ai_handler._SCHEMA
+
+
+# ── Web dashboard: no WhatsApp limits ─────────────────────────────────────────
+
+class TestWebMode:
+    def _run(self, web, n_rows=630):
+        seen = {}
+
+        def fake_write(question, previous_error=None, previous_sql=None, web=False):
+            seen["web_note"] = web
+            return {"sql": SCOPED}
+
+        def fake_run(sql, group_id, **kw):
+            seen["max_rows"] = kw["max_rows"]
+            return [{"log_date": "2025-01-01", "description": "x" * 100}] * n_rows, False
+
+        def fake_generate(prompt, **kw):
+            seen["prompt"], seen["max_tokens"] = prompt, kw["max_tokens"]
+            return "answer"
+
+        with patch.object(ai_handler, "_write_sql", side_effect=fake_write), \
+             patch.object(db, "run_readonly_query", side_effect=fake_run), \
+             patch.object(ai_handler.llm, "generate", side_effect=fake_generate):
+            out = (ai_handler.answer_query_web("G", "P45 from the start")
+                   if web else ai_handler.answer_query("G", "P45 from the start"))
+        return out, seen
+
+    def test_web_lifts_the_row_cap_and_returns_every_row(self):
+        out, seen = self._run(web=True)
+        assert seen["web_note"] is True
+        assert seen["max_rows"] == ai_handler._WEB_MAX_RESULT_ROWS
+        assert len(out["rows"]) == 630 and out["sql"] == SCOPED
+        # All 630 fit the web context, unlike WhatsApp's 25k characters.
+        assert "630 row(s)" in seen["prompt"]
+
+    def test_big_web_results_are_summarised_not_retyped(self):
+        _, seen = self._run(web=True)
+        assert "do not list them one" in seen["prompt"]
+        assert seen["max_tokens"] == ai_handler._WEB_SUMMARY_TOKENS
+
+    def test_small_web_results_are_still_listed(self):
+        _, seen = self._run(web=True, n_rows=12)
+        assert "FOR THIS ANSWER ONLY" not in seen["prompt"]
+
+    def test_whatsapp_keeps_its_limits(self):
+        out, seen = self._run(web=False)
+        assert out == "answer"
+        assert seen["web_note"] is False
+        assert seen["max_rows"] == ai_handler._MAX_RESULT_ROWS
+        assert "FOR THIS ANSWER ONLY" not in seen["prompt"]

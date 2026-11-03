@@ -158,11 +158,12 @@ def test_ask_routes_tunnel_questions_across_all_contracts(client, monkeypatch):
 
     def fake(gid, question, all_contracts=False):
         seen.update(gid=gid, all_contracts=all_contracts)
-        return "*P103* 50%"
+        return {"answer": "*P103* 50%", "rows": [{"pct": 50}], "sql": "SELECT"}
 
-    monkeypatch.setattr(tunnel_ai, "answer_tunnel_query", fake)
+    monkeypatch.setattr(tunnel_ai, "answer_tunnel_query_web", fake)
     r = client.post("/api/ask", json={"question": "progress?", "scope": "tunnel"})
-    assert r.json() == {"kind": "text", "answer": "*P103* 50%"}
+    assert r.json() == {"kind": "text", "answer": "*P103* 50%", "rows": [{"pct": 50}],
+                        "sql": "SELECT"}
     assert seen == {"gid": TUNNEL, "all_contracts": True}
 
 

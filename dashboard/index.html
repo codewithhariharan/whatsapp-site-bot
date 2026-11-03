@@ -194,6 +194,15 @@ td .act .btn { padding: 4px 10px; font-size: 12.5px; }
 .btn.danger.armed { background: var(--bad); border-color: var(--bad); color: #fff; }
 .users tbody tr { cursor: default; }
 
+.result { margin-top: 14px; white-space: normal; }
+.result-head { display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  margin-bottom: 8px; flex-wrap: wrap; }
+.result tbody tr { cursor: default; }
+details.sql { margin-top: 10px; font-size: 12.5px; color: var(--muted); white-space: normal; }
+details.sql summary { cursor: pointer; }
+details.sql pre { white-space: pre-wrap; word-break: break-word; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 12px; color: var(--text); }
+
 .console { max-width: 900px; margin: 0 auto; }
 .console .log { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
 .console .msg.q { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
@@ -606,10 +615,53 @@ const EXAMPLES = {
 };
 const askState = {scope: "site", thread: []};
 
+// Every row the answer's query returned, under the answer — the web has no
+// row cap, so this is the whole result, and the place to check the answer
+// against. Long results draw the first rows and the rest on request, so the
+// page stays quick; the CSV always holds all of them.
+const RESULT_PREVIEW_ROWS = 500;
+
+function resultCell(col, v) {
+  if (v == null) return "";
+  if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}T/.test(v)) return fmtDateTime(v);
+  if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v)) return fmtDate(v);
+  return cellText(col, v);
+}
+
+function resultBlock(m, i) {
+  if (!m.rows || !m.rows.length) {
+    return m.sql ? `<details class="sql"><summary>Query run — no rows</summary><pre>${esc(m.sql)}</pre></details>` : "";
+  }
+  const cols = Object.keys(m.rows[0]);
+  const shown = m.showAll ? m.rows : m.rows.slice(0, RESULT_PREVIEW_ROWS);
+  return `<div class="result">
+    <div class="result-head"><b>All ${fmtN(m.rows.length)} matching entr${m.rows.length === 1 ? "y" : "ies"}</b>
+      <button class="btn" data-csv="${i}">Download CSV</button></div>
+    <div class="tablewrap" style="max-height:480px"><table><thead><tr>${cols.map(c => `<th>${esc(label(c))}</th>`).join("")}</tr></thead>
+      <tbody>${shown.map(r => `<tr>${cols.map(c => `<td class="${NUMERIC.has(c) || typeof r[c] === "number" ? "num" : ""}">${esc(resultCell(c, r[c]))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
+    ${shown.length < m.rows.length ? `<button class="btn" data-all="${i}" style="margin-top:8px">Show all ${fmtN(m.rows.length)} rows</button>` : ""}
+    <details class="sql"><summary>Query run</summary><pre>${esc(m.sql)}</pre></details></div>`;
+}
+
+function downloadCsv(m) {
+  const cols = Object.keys(m.rows[0]);
+  const q = v => {
+    const s = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = [cols.map(label).map(q).join(",")]
+    .concat(m.rows.map(r => cols.map(c => q(resultCell(c, r[c]))).join(","))).join("\r\n");
+  // The BOM makes Excel read the file as UTF-8, so "›" and names survive.
+  const url = URL.createObjectURL(new Blob(["﻿" + csv], {type: "text/csv"}));
+  const a = Object.assign(document.createElement("a"), {href: url, download: "answer_rows.csv"});
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10e3);
+}
+
 function renderThread() {
   const t = $("#thread");
   if (!t) return;
-  t.innerHTML = askState.thread.map(m => {
+  t.innerHTML = askState.thread.map((m, i) => {
     if (m.role === "q") return `<div class="msg q"><div class="tag">${m.scope === "tunnel" ? "Tunnel" : "Site"}</div>${esc(m.text)}</div>`;
     if (m.pending) return `<div class="msg a"><span class="spinner"></span>Searching the record…</div>`;
     if (m.error) return `<div class="msg a err">${esc(m.error)}</div>`;
@@ -622,7 +674,8 @@ function renderThread() {
           <div class="photos">${s.photos.map(photoCard).join("") || '<div class="empty">None found.</div>'}</div>`).join("")}
         ${m.capped ? `<p class="s">Some photos were left out — narrow the dates to see the rest.</p>` : ""}</div>`;
     }
-    return `<div class="msg a">${renderWhatsApp(m.answer)}</div>`;
+    const rows = resultBlock(m, i);
+    return `<div class="msg a"${rows ? ' style="max-width:100%;width:100%"' : ""}>${renderWhatsApp(m.answer)}${rows}</div>`;
   }).join("");
 }
 
@@ -648,6 +701,12 @@ function showAsk() {
   $("#scope").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setScope(b.dataset.s); });
   $("#chips").addEventListener("click", e => { const c = e.target.closest(".chip"); if (c) { $("#question").value = c.textContent; send(); } });
   $("#send").addEventListener("click", send);
+  $("#thread").addEventListener("click", e => {
+    const csv = e.target.closest("button[data-csv]");
+    if (csv) return downloadCsv(askState.thread[+csv.dataset.csv]);
+    const all = e.target.closest("button[data-all]");
+    if (all) { askState.thread[+all.dataset.all].showAll = true; renderThread(); }
+  });
   $("#question").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
   setScope(askState.scope);
   renderThread();

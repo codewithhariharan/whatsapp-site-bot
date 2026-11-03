@@ -32,6 +32,19 @@ _MAX_RESULT_ROWS = 200
 _CONTEXT_CHAR_BUDGET = 25_000
 _MAX_FALLBACK_ROWS = 40
 
+# The web dashboard shows every row under the answer, so none of the above
+# applies there. See the same constants in ai_handler.py.
+_WEB_MAX_RESULT_ROWS = 200_000
+_WEB_CONTEXT_CHAR_BUDGET = 1_500_000
+_WEB_QUERY_TIMEOUT_MS = 30_000
+_WEB_LIST_ROWS = 60
+_WEB_SUMMARY_TOKENS = 4000
+_WEB_SQL_NOTE = (
+    "\n\nThis answer is shown on a web page that displays EVERY row of your "
+    "result in a table. If the question asks for entries, return all matching "
+    "rows with NO LIMIT. Counts and other aggregates are written as usual."
+)
+
 # Anything the model writes must stay inside the tunnel tables.
 _OUT_OF_SCOPE_TABLES = (
     "daily_logs", "dwall_panels", "pending_messages", "location_order",
@@ -157,9 +170,11 @@ def _sql_system(all_contracts: bool) -> str:
 
 def _write_sql(question: str, all_contracts: bool,
                previous_error: str | None = None,
-               previous_sql: str | None = None) -> dict:
+               previous_sql: str | None = None, web: bool = False) -> dict:
     """Ask the model for a query. On a retry, show it what Postgres said."""
     user = f"Today is {site_today().isoformat()}.\n\nQuestion:\n\"\"\"{question}\"\"\""
+    if web:
+        user += _WEB_SQL_NOTE
     if previous_error:
         user += (
             f"\n\nYour previous attempt failed. Fix it.\n"
@@ -189,14 +204,17 @@ def _scope_problem(sql: str, all_contracts: bool) -> str | None:
     return None
 
 
-def _run_sql_path(group_id: str, question: str,
-                  all_contracts: bool) -> tuple[str, bool, int] | None:
-    """Write and run a query, retrying once on error. None = fall back."""
+def _run_sql_path(group_id: str, question: str, all_contracts: bool, web: bool = False
+                  ) -> tuple[str, bool, int, list[dict], str] | None:
+    """Write and run a query, retrying once on error. None = fall back.
+
+    Returns (rendered result block, hit_row_cap, rows_shown, every row, the SQL).
+    """
     attempt_error = attempt_sql = None
 
     for attempt in (1, 2):
         try:
-            plan = _write_sql(question, all_contracts, attempt_error, attempt_sql)
+            plan = _write_sql(question, all_contracts, attempt_error, attempt_sql, web=web)
         except Exception:
             logger.exception("tunnel /ask: SQL generation failed (attempt %d)", attempt)
             return None
@@ -216,7 +234,8 @@ def _run_sql_path(group_id: str, question: str,
             # the model wrote.
             rows, truncated = db.run_readonly_query(
                 sql, group_id,
-                timeout_ms=_QUERY_TIMEOUT_MS, max_rows=_MAX_RESULT_ROWS,
+                timeout_ms=_WEB_QUERY_TIMEOUT_MS if web else _QUERY_TIMEOUT_MS,
+                max_rows=_WEB_MAX_RESULT_ROWS if web else _MAX_RESULT_ROWS,
                 tables=("tunnel_progress", "tunnel_flags"),
                 scope_to_group=not all_contracts,
             )
@@ -227,7 +246,7 @@ def _run_sql_path(group_id: str, question: str,
 
         logger.info("tunnel /ask: %d rows from %s",
                     len(rows), sql.replace("\n", " ")[:200])
-        blob, shown = _fit(rows, _CONTEXT_CHAR_BUDGET)
+        blob, shown = _fit(rows, _WEB_CONTEXT_CHAR_BUDGET if web else _CONTEXT_CHAR_BUDGET)
         note = (
             f" (showing the first {shown}; the query matched more)" if truncated else ""
         )
@@ -236,6 +255,8 @@ def _run_sql_path(group_id: str, question: str,
             f"RESULT — {shown} row(s){note}:\n{blob}",
             truncated,
             shown,
+            rows,
+            sql,
         )
 
     return None
@@ -279,10 +300,23 @@ def answer_tunnel_query(group_id: str, question: str,
     rows are visible. Synchronous: psycopg and the Gemini client both block.
     Callers on the event loop must run this in a thread.
     """
-    sql_result = _run_sql_path(group_id, question, all_contracts)
+    return _answer(group_id, question, all_contracts, web=False)["answer"]
+
+
+def answer_tunnel_query_web(group_id: str, question: str,
+                            all_contracts: bool = False) -> dict:
+    """answer_tunnel_query for the web dashboard, without WhatsApp's limits:
+    {"answer", "rows", "sql"}. Synchronous."""
+    return _answer(group_id, question, all_contracts, web=True)
+
+
+def _answer(group_id: str, question: str, all_contracts: bool, web: bool) -> dict:
+    sql_result = _run_sql_path(group_id, question, all_contracts, web=web)
+    rows: list[dict] = []
+    sql = ""
 
     if sql_result is not None:
-        data, truncated, rows_shown = sql_result
+        data, truncated, rows_shown, rows, sql = sql_result
         provenance = (
             "The result below comes from a query run across the ENTIRE tunnel "
             "record, not a sample. If it reports a count or an extreme, that "
@@ -343,6 +377,16 @@ is. That is an answer, not a miss.
 
 Question: {question}"""
 
+    max_tokens = 1500
+    if web and len(rows) > _WEB_LIST_ROWS:
+        context += f"""
+
+FOR THIS ANSWER ONLY: the answer is shown on a web page, and all {len(rows)}
+rows of the result are displayed in a table directly under it, so do not list
+them one by one. Give the total and the period they cover, then summarise them
+by contract and drive, with what stands out."""
+        max_tokens = _WEB_SUMMARY_TOKENS
     model = (_ANSWER_MODEL_SMALL if rows_shown <= _SMALL_RESULT_ROWS
              else _ANSWER_MODEL_LARGE)
-    return llm.generate(context, model=model, max_tokens=1500)
+    answer = llm.generate(context, model=model, max_tokens=max_tokens)
+    return {"answer": answer, "rows": rows, "sql": sql}

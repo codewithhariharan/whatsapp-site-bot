@@ -53,7 +53,9 @@ api = APIRouter(dependencies=[Depends(current_user)])
 _STATIC = Path(__file__).parent / "dashboard"
 
 _MAX_PAGE_SIZE = 200
-_MAX_EXPORT_ROWS = 20_000
+# Excel's own sheet limit, less the header row: a download is never cut short
+# by us. The whole site record is ~42,000 rows.
+_MAX_EXPORT_ROWS = 1_048_575
 _THUMB_EDGE = 480
 
 
@@ -395,12 +397,12 @@ def ask(body: AskRequest, user: dict = Depends(current_user)):
         if body.scope == "tunnel":
             if not settings.tunnel_group_ids:
                 raise HTTPException(status_code=503, detail="Tunnel groups are not set up.")
-            from tunnel_ai import answer_tunnel_query
+            from tunnel_ai import answer_tunnel_query_web
             # The director's view: every tunnel group. The scope is any one of
             # them; all_contracts lifts it to all of TUNNEL_GROUP_IDS' data.
             gid = sorted(settings.tunnel_group_ids)[0]
             return {"kind": "text",
-                    "answer": answer_tunnel_query(gid, question, all_contracts=True)}
+                    **answer_tunnel_query_web(gid, question, all_contracts=True)}
 
         gid = settings.DASHBOARD_SITE_GROUP_ID.strip()
         if not gid:
@@ -421,8 +423,10 @@ def ask(body: AskRequest, user: dict = Depends(current_user)):
                 ],
             }
 
-        from ai_handler import answer_query
-        return {"kind": "text", "answer": answer_query(gid, question)}
+        # The web variant: no row cap, and every row comes back for the page
+        # to show under the answer. WhatsApp keeps answer_query's limits.
+        from ai_handler import answer_query_web
+        return {"kind": "text", **answer_query_web(gid, question)}
     except HTTPException:
         raise
     except Exception:
