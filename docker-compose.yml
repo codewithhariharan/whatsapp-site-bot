@@ -49,5 +49,30 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # HTTPS for the web dashboard — the one service reachable from outside.
+  # Behind a profile so a plain `docker compose up` (and `up -d --build api`)
+  # leaves it alone. Set DASHBOARD_DOMAIN in .env (compose reads that file for
+  # substitution; the api ignores the key), then start it once with:
+  #   docker compose --profile public up -d caddy
+  # Needs ports 80 and 443 open in the VPC firewall. The default, localhost,
+  # only keeps compose from failing where the domain is not set.
+  caddy:
+    image: caddy:2.8.4
+    profiles: ["public"]
+    environment:
+      DASHBOARD_DOMAIN: ${DASHBOARD_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The certificate and its account key; losing them only means Caddy
+      # requests a new certificate.
+      - caddy_data:/data
+    depends_on:
+      - api
+    restart: unless-stopped
+
 volumes:
   baileys_auth:
+  caddy_data:

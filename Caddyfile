@@ -1,0 +1,25 @@
+# HTTPS in front of the web dashboard (the `caddy` service, profile "public").
+#
+# Caddy gets and renews the certificate itself. DASHBOARD_DOMAIN must resolve
+# to this VM — with no domain of our own, <ip-with-dashes>.sslip.io does, e.g.
+# 34-124-219-192.sslip.io. Port 80 must be open too: it answers the
+# certificate challenge and redirects everything else to HTTPS.
+
+{$DASHBOARD_DOMAIN} {
+	encode gzip
+
+	# The bridge's ingest endpoint is for the compose network only. It checks
+	# its secret regardless, but there is no reason to expose it at all.
+	@bridge path /baileys/*
+	respond @bridge 404
+
+	reverse_proxy api:8000
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+}
