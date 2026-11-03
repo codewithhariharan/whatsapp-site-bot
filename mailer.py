@@ -1,6 +1,6 @@
 """Sending email: SMTP with STARTTLS, nothing else.
 
-Only /tunnel sends mail. The standard library is enough — one message at a
+/tunnel and the 6-hourly record workbook (record_export.py) send mail. The standard library is enough — one message at a
 time, on request — so there is no mail SDK to install or keep current.
 """
 
@@ -23,17 +23,20 @@ def is_configured(recipients: list[str]) -> bool:
 
 
 def send_email(recipients: list[str], subject: str, text: str,
-               html: str | None = None) -> None:
+               html: str | None = None,
+               attachments: list[tuple[str, bytes, str]] | None = None) -> None:
     """Send one message. Blocking: callers on the event loop use a thread.
 
     `text` is the plain body every client can show; `html`, when given, is the
-    formatted alternative most clients prefer.
+    formatted alternative most clients prefer. `attachments` are
+    (filename, bytes, "maintype/subtype").
     """
     if not is_configured(recipients):
         raise EmailNotConfigured("SMTP_HOST and a recipient are required")
     # The dashboard's test console shows the email instead of sending it.
     if sandbox.capture({"type": "email", "to": recipients, "subject": subject,
-                        "text": text, "html": html}):
+                        "text": text, "html": html,
+                        "attachments": [name for name, _, _ in attachments or []]}):
         return
 
     sender = settings.EMAIL_FROM or settings.SMTP_USER
@@ -44,6 +47,9 @@ def send_email(recipients: list[str], subject: str, text: str,
     msg.set_content(text)
     if html:
         msg.add_alternative(html, subtype="html")
+    for filename, data, mimetype in attachments or []:
+        maintype, _, subtype = mimetype.partition("/")
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
 
     with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=30) as smtp:
         smtp.starttls()

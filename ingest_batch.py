@@ -318,3 +318,12 @@ async def scheduler():
             await run_batch(cutoff=slot, label=slot.strftime("%H:%M"))
         except Exception:
             logger.exception("batch: %s run failed", slot.strftime("%H:%M"))
+
+        # Then the record as this run left it, for OneDrive. Sent even when
+        # the run had nothing to log, so the file's "updated" time stays true.
+        if settings.record_email_to:
+            import record_export
+            try:
+                await asyncio.to_thread(record_export.send_record, slot)
+            except Exception:
+                logger.exception("record workbook: %s send failed", slot.strftime("%H:%M"))

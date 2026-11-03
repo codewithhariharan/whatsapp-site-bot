@@ -58,7 +58,7 @@ def test_email_is_captured_not_sent(in_console, monkeypatch):
     monkeypatch.setattr(mailer.smtplib, "SMTP", lambda *a, **k: pytest.fail("sent an email"))
     mailer.send_email(["a@b.sg"], "Subj", "body", "<p>body</p>")
     assert in_console == [{"type": "email", "to": ["a@b.sg"], "subject": "Subj",
-                           "text": "body", "html": "<p>body</p>"}]
+                           "text": "body", "html": "<p>body</p>", "attachments": []}]
 
 
 def test_captured_in_threads_too(in_console, no_bridge):

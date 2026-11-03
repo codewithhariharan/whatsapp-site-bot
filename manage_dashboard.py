@@ -41,7 +41,21 @@ def main(argv: list[str] | None = None) -> int:
     reset = sub.add_parser("reset", help="set a new password and make the account an enabled admin")
     reset.add_argument("email")
     sub.add_parser("list", help="list accounts")
+    sub.add_parser("send-record", help="email Site_Record.xlsx to RECORD_EMAIL_TO now")
     args = parser.parse_args(argv)
+
+    if args.command == "send-record":
+        # The same send the scheduler makes after each batch; for a first test
+        # of the Power Automate flow without waiting for the next slot.
+        import record_export
+        from config import settings
+        if not settings.record_email_to:
+            print("RECORD_EMAIL_TO is not set.")
+            return 1
+        size = record_export.send_record()
+        print(f"Sent {record_export.FILENAME} ({size:,} bytes) to "
+              f"{', '.join(settings.record_email_to)}.")
+        return 0
 
     if args.command == "list":
         for u in auth.list_users():

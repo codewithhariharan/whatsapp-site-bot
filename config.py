@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     # Every contract's summary for the day is emailed at this site time (HH:MM).
     # Empty turns the daily email off; /tunnel still works.
     TUNNEL_DAILY_EMAIL_AT: str = "18:00"
+    # After each 6-hourly batch, the whole record (the dashboard's four tables)
+    # is emailed here as Site_Record.xlsx — for a Power Automate flow to save
+    # into OneDrive, where Copilot can read it. Comma-separated. Empty turns
+    # it off. See record_export.py.
+    RECORD_EMAIL_TO: str = ""
 
     # The web dashboard (dashboard.py). Its site tables show only this group's
     # rows — a JID, for the same reason as above. Empty shows no site data.
@@ -75,6 +80,10 @@ class Settings(BaseSettings):
     @property
     def master_group_ids(self) -> set[str]:
         return {g.strip() for g in self.MASTER_GROUP_IDS.split(",") if g.strip()}
+
+    @property
+    def record_email_to(self) -> list[str]:
+        return [a.strip() for a in self.RECORD_EMAIL_TO.split(",") if a.strip()]
 
     @property
     def tunnel_email_to(self) -> list[str]:
