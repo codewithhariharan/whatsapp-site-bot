@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from config import settings
+from dashboard import router as dashboard_router
+from dashboard_auth import router as auth_router
 from message_handler import handle_message
 from ingest_batch import scheduler
 from tunnel_handler import daily_email_scheduler
@@ -33,7 +35,12 @@ async def lifespan(app: FastAPI):
             await task
 
 
-app = FastAPI(title="Site Bot", lifespan=lifespan)
+# No /docs, /redoc or /openapi.json: the dashboard is on a public address, and
+# a browsable map of every endpoint is no help to the people who use it.
+app = FastAPI(title="Site Bot", lifespan=lifespan,
+              docs_url=None, redoc_url=None, openapi_url=None)
+app.include_router(auth_router)
+app.include_router(dashboard_router)
 
 
 # ── Incoming messages ─────────────────────────────────────────────────────────

@@ -56,6 +56,18 @@ class Settings(BaseSettings):
     # Empty turns the daily email off; /tunnel still works.
     TUNNEL_DAILY_EMAIL_AT: str = "18:00"
 
+    # The web dashboard (dashboard.py). Its site tables show only this group's
+    # rows — a JID, for the same reason as above. Empty shows no site data.
+    # The tunnel tables follow TUNNEL_GROUP_IDS.
+    DASHBOARD_SITE_GROUP_ID: str = ""
+    # /ask spends Gemini calls: questions per person per 10 minutes, and from
+    # everyone per day.
+    DASHBOARD_ASK_PER_VISITOR: int = 10
+    DASHBOARD_ASK_PER_DAY: int = 200
+    # The login cookie is sent over HTTPS only. Turn off only to try the
+    # dashboard on http://localhost — never on the public address.
+    DASHBOARD_COOKIE_SECURE: bool = True
+
     @property
     def tunnel_group_ids(self) -> set[str]:
         return {g.strip() for g in self.TUNNEL_GROUP_IDS.split(",") if g.strip()}

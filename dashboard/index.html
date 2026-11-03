@@ -1,0 +1,846 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Site Record</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<style>
+:root {
+  --bg: #f4f6f9; --surface: #ffffff; --surface-2: #f8fafc; --border: #e3e8ef;
+  --text: #0f1b2d; --muted: #5b6b80; --faint: #8a98aa;
+  --brand: #1f3a5f; --brand-2: #2f6fb3; --accent: #e8f1fb;
+  --good: #1f8a5b; --warn: #b7791f; --bad: #c0392b; --bad-bg: #fdecea;
+  --shadow: 0 1px 2px rgba(16,27,45,.06), 0 1px 3px rgba(16,27,45,.08);
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1520; --surface: #142131; --surface-2: #192a3e; --border: #24384f;
+    --text: #e6edf5; --muted: #9db0c6; --faint: #6f849c;
+    --brand: #8fb8e8; --brand-2: #5d9ee0; --accent: #1b3350;
+    --good: #4cc38a; --warn: #e0a64a; --bad: #ef6b5b; --bad-bg: #3a1d1d;
+    --shadow: 0 1px 2px rgba(0,0,0,.3);
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 Inter, system-ui, sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: var(--brand-2); }
+
+header.top {
+  background: var(--brand); color: #fff; padding: 14px 24px;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+}
+@media (prefers-color-scheme: dark) { header.top { background: #10233a; } }
+header.top h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+header.top .sub { opacity: .75; font-size: 13px; }
+.updated { margin-left: auto; font-size: 12.5px; background: rgba(255,255,255,.12);
+  padding: 6px 12px; border-radius: 999px; display: flex; gap: 10px; flex-wrap: wrap; }
+.updated b { font-weight: 600; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #5fd39a; display: inline-block; margin-right: 6px; }
+
+nav.tabs { background: var(--surface); border-bottom: 1px solid var(--border);
+  display: flex; gap: 2px; padding: 0 16px; overflow-x: auto; position: sticky; top: 0; z-index: 5; }
+nav.tabs button { background: none; border: 0; padding: 13px 14px; cursor: pointer; color: var(--muted);
+  font-weight: 500; border-bottom: 2px solid transparent; white-space: nowrap; }
+nav.tabs button:hover { color: var(--text); }
+nav.tabs button.on { color: var(--brand-2); border-bottom-color: var(--brand-2); }
+
+main { max-width: 1400px; margin: 0 auto; padding: 22px 24px 60px; }
+.notice { background: var(--accent); border: 1px solid var(--border); padding: 10px 14px;
+  border-radius: var(--radius); margin-bottom: 16px; color: var(--muted); }
+
+.grid { display: grid; gap: 16px; }
+.kpis { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.two { grid-template-columns: 2fr 1fr; }
+@media (max-width: 900px) { .two { grid-template-columns: 1fr; } }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 16px 18px; min-width: 0; }
+.card h2 { font-size: 13px; font-weight: 600; color: var(--muted); margin: 0 0 12px;
+  text-transform: uppercase; letter-spacing: .5px; }
+.kpi .v { font-size: 28px; font-weight: 700; letter-spacing: -.5px; }
+.kpi .l { color: var(--muted); font-size: 13px; }
+.kpi .s { color: var(--faint); font-size: 12px; margin-top: 2px; }
+
+.chart svg { width: 100%; height: 200px; display: block; }
+.chart .bar { fill: var(--brand-2); }
+.chart .bar:hover { fill: var(--brand); }
+.chart text { fill: var(--faint); font-size: 10px; }
+.hbar { display: grid; grid-template-columns: minmax(80px, 160px) 1fr 40px; gap: 10px;
+  align-items: center; margin: 7px 0; font-size: 13px; }
+.hbar .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.track { background: var(--surface-2); border-radius: 4px; height: 10px; overflow: hidden; }
+.fill { background: var(--brand-2); height: 100%; border-radius: 4px; }
+.hbar .n { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.drive { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.drive:last-child { border-bottom: 0; }
+.drive .row1 { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.drive .row1 b { font-weight: 600; }
+.drive .meta { color: var(--faint); font-size: 12px; margin-top: 4px; }
+.flag { padding: 8px 10px; border-left: 3px solid var(--bad); background: var(--bad-bg);
+  border-radius: 4px; margin-bottom: 8px; font-size: 13px; }
+.flag .meta { color: var(--muted); font-size: 12px; }
+.empty { color: var(--faint); padding: 18px 0; text-align: center; }
+
+.toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.toolbar input[type=search] { flex: 1 1 260px; }
+input, select, textarea { background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 11px; outline: none; }
+input:focus, textarea:focus { border-color: var(--brand-2); box-shadow: 0 0 0 3px var(--accent); }
+label.inl { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
+.btn { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 14px; cursor: pointer; font-weight: 500; }
+.btn:hover { border-color: var(--brand-2); }
+.btn.primary { background: var(--brand-2); border-color: var(--brand-2); color: #fff; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn:disabled { opacity: .5; cursor: default; }
+
+.tablewrap { overflow: auto; max-height: calc(100vh - 260px); border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th { position: sticky; top: 0; background: var(--surface-2); text-align: left; font-weight: 600;
+  color: var(--muted); padding: 10px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; z-index: 1; }
+td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; max-width: 420px; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.nowrap { white-space: nowrap; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--accent); }
+.pager { display: flex; justify-content: space-between; align-items: center; margin-top: 12px;
+  color: var(--muted); font-size: 13px; gap: 10px; flex-wrap: wrap; }
+.pager .btns { display: flex; gap: 6px; }
+
+.drawer-bg { position: fixed; inset: 0; background: rgba(10,18,30,.45); display: none; z-index: 20; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 100vw); background: var(--surface);
+  z-index: 21; transform: translateX(100%); transition: transform .2s; overflow-y: auto;
+  box-shadow: -8px 0 24px rgba(0,0,0,.15); }
+.drawer.open { transform: none; }
+.drawer-bg.open { display: block; }
+.drawer header { display: flex; justify-content: space-between; align-items: center;
+  padding: 16px 20px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); }
+.drawer header h3 { margin: 0; font-size: 15px; }
+.drawer dl { margin: 0; padding: 8px 20px 24px; }
+.drawer dt { color: var(--faint); font-size: 12px; margin-top: 12px; }
+.drawer dd { margin: 2px 0 0; white-space: pre-wrap; word-break: break-word; }
+.x { background: none; border: 0; font-size: 22px; cursor: pointer; color: var(--muted); line-height: 1; }
+
+.photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+.ph { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  overflow: hidden; cursor: pointer; box-shadow: var(--shadow); }
+.ph img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; background: var(--surface-2); }
+.ph .cap { padding: 8px 10px; font-size: 12.5px; }
+.ph .cap b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph .cap span { color: var(--faint); }
+.lightbox { position: fixed; inset: 0; background: rgba(5,10,18,.92); z-index: 30; display: none;
+  align-items: center; justify-content: center; flex-direction: column; padding: 20px; }
+.lightbox.open { display: flex; }
+.lightbox img { max-width: 100%; max-height: 82vh; border-radius: 6px; }
+.lightbox .info { color: #dfe7f1; margin-top: 12px; text-align: center; max-width: 800px; font-size: 13px; }
+.lightbox .x { position: absolute; top: 14px; right: 20px; color: #fff; font-size: 30px; }
+
+.ask { max-width: 900px; margin: 0 auto; }
+.scope { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.scope button { border: 0; background: var(--surface); padding: 7px 14px; cursor: pointer; }
+.scope button.on { background: var(--brand-2); color: #fff; }
+.askbox { display: flex; gap: 10px; margin-top: 12px; }
+.askbox textarea { flex: 1; resize: vertical; min-height: 48px; max-height: 200px; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.chip { border: 1px solid var(--border); background: var(--surface); border-radius: 999px;
+  padding: 5px 12px; font-size: 12.5px; cursor: pointer; color: var(--muted); }
+.chip:hover { color: var(--brand-2); border-color: var(--brand-2); }
+.thread { margin-top: 22px; display: flex; flex-direction: column; gap: 14px; }
+.msg { padding: 12px 16px; border-radius: var(--radius); max-width: 92%; }
+.msg.q { align-self: flex-end; background: var(--brand-2); color: #fff; }
+.msg.a { align-self: flex-start; background: var(--surface); border: 1px solid var(--border);
+  box-shadow: var(--shadow); white-space: pre-wrap; }
+.msg.a.err { border-color: var(--bad); }
+.msg .tag { font-size: 11px; opacity: .7; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .4px; }
+.msg h4 { margin: 12px 0 8px; font-size: 13px; }
+.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border);
+  border-top-color: var(--brand-2); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 8px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.userbox { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.userbox button { background: rgba(255,255,255,.12); border: 0; color: #fff; padding: 6px 11px;
+  border-radius: 6px; cursor: pointer; }
+.userbox button:hover { background: rgba(255,255,255,.22); }
+
+.auth { min-height: calc(100vh - 80px); display: flex; align-items: center; justify-content: center; padding: 24px 16px; }
+.auth .card { width: min(400px, 100%); padding: 28px; }
+.auth h2 { text-transform: none; letter-spacing: 0; font-size: 20px; color: var(--text); margin-bottom: 6px; }
+.auth p { color: var(--muted); margin: 0 0 18px; }
+.auth label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 5px; }
+.auth input { width: 100%; }
+.auth .btn { width: 100%; margin-top: 18px; padding: 10px; }
+.formerr { color: var(--bad); font-size: 13px; margin-top: 12px; min-height: 1em; }
+
+.adduser { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.adduser input[type=email] { flex: 1 1 240px; }
+.adduser input[type=text] { flex: 1 1 180px; }
+.secret { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--good); border-radius: var(--radius);
+  background: var(--accent); }
+.secret code { font: 600 18px/1.4 ui-monospace, Consolas, monospace; letter-spacing: 1px; user-select: all; }
+.badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); margin-right: 4px; }
+.badge.admin { color: var(--brand-2); border-color: var(--brand-2); }
+.badge.off { color: var(--bad); border-color: var(--bad); }
+td .act { display: flex; gap: 6px; flex-wrap: wrap; }
+td .act .btn { padding: 4px 10px; font-size: 12.5px; }
+.btn.danger { color: var(--bad); }
+.btn.danger.armed { background: var(--bad); border-color: var(--bad); color: #fff; }
+.users tbody tr { cursor: default; }
+
+@media (max-width: 640px) {
+  header.top, main { padding-left: 16px; padding-right: 16px; }
+  .updated { margin-left: 0; }
+  .hbar { grid-template-columns: 90px 1fr 34px; }
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div>
+    <h1>Site Record</h1>
+    <div class="sub">Site logs, D-wall panels and tunnel progress from the WhatsApp groups</div>
+  </div>
+  <div class="updated" id="updated" hidden></div>
+  <div class="userbox" id="userbox" hidden></div>
+</header>
+
+<nav class="tabs" id="tabs"></nav>
+<main id="view"></main>
+
+<div class="drawer-bg" id="drawerBg"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <header><h3 id="drawerTitle">Entry</h3><button class="x" id="drawerClose" aria-label="Close">×</button></header>
+  <dl id="drawerBody"></dl>
+</aside>
+
+<div class="lightbox" id="lightbox">
+  <button class="x" id="lbClose" aria-label="Close">×</button>
+  <img id="lbImg" alt="">
+  <div class="info" id="lbInfo"></div>
+</div>
+
+<script>
+"use strict";
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+const $ = (sel, el = document) => el.querySelector(sel);
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const fmtN = n => n == null ? "—" : Number(n).toLocaleString("en-SG");
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+// Everything is shown in site time (Singapore), whatever the viewer's clock.
+function sgParts(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return null;
+  const s = new Date(d.getTime() + 8 * 3600e3);
+  return {y: s.getUTCFullYear(), m: s.getUTCMonth(), d: s.getUTCDate(),
+          h: s.getUTCHours(), min: s.getUTCMinutes()};
+}
+function fmtDate(v) {
+  if (!v) return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if (m) return `${+m[3]} ${MONTHS[+m[2] - 1]} ${m[1]}`;
+  return fmtDateTime(v);
+}
+function fmtTime(p) {
+  const h12 = p.h % 12 || 12;
+  return `${h12}:${String(p.min).padStart(2, "0")}${p.h < 12 ? "am" : "pm"}`;
+}
+function fmtDateTime(v) {
+  const p = sgParts(v);
+  if (!p) return String(v);
+  return `${p.d} ${MONTHS[p.m]} ${p.y}, ${fmtTime(p)}`;
+}
+const label = c => ({
+  log_date: "Date", logged_at: "Logged", main_location: "Location", sub_location: "Sub-location",
+  sender_name: "Sent by", sent_at: "Sent", sent_date: "Date", report_date: "Report date",
+  pct_complete: "% complete", rings_built: "Rings built", current_ring: "Current ring",
+  total_rings: "Total rings", tbm_location: "TBM location", flag_text: "Flagged item",
+  overbreak_pct: "Overbreak %", created_at: "Recorded",
+}[c] || c.replace(/_/g, " ").replace(/^./, s => s.toUpperCase()));
+
+const NUMERIC = new Set(["rings_built", "current_ring", "total_rings", "pct_complete"]);
+const TIMESTAMP = new Set(["logged_at", "sent_at", "created_at"]);
+const DATE = new Set(["log_date", "sent_date"]);
+
+function cellText(col, v) {
+  if (v == null || v === "") return "";
+  if (TIMESTAMP.has(col)) return fmtDateTime(v);
+  if (DATE.has(col) || (col === "report_date" && /^\d{4}-/.test(v))) return fmtDate(v);
+  if (col === "pct_complete") return `${Number(v).toLocaleString("en-SG", {maximumFractionDigits: 1})}%`;
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+// A 401 anywhere means the session ended (logged out elsewhere, removed by an
+// admin, expired): drop back to the login form rather than show an error.
+async function api(path, opts) {
+  const r = await fetch(path, {credentials: "same-origin", ...opts});
+  if (!r.ok) {
+    let detail = `${r.status} ${r.statusText}`;
+    try { detail = (await r.json()).detail || detail; } catch {}
+    if (r.status === 401 && path !== "/api/login") { showLogin(); }
+    throw new Error(detail);
+  }
+  return r.json();
+}
+const post = (path, body) => api(path, {method: "POST",
+  headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+
+// The answers are written for WhatsApp: *bold* and "•" bullets.
+function renderWhatsApp(text) {
+  return esc(text).replace(/\*([^*\n]+)\*/g, "<b>$1</b>").replace(/_([^_\n]+)_/g, "<i>$1</i>");
+}
+
+// ── State and routing ────────────────────────────────────────────────────────
+
+let META = null;
+let ME = null;
+const VIEWS = [
+  ["overview", "Overview"],
+  ["daily_logs", "Site logs"],
+  ["dwall_panels", "D-wall panels"],
+  ["tunnel_progress", "Tunnel progress"],
+  ["tunnel_flags", "Flagged items"],
+  ["photos", "Photos"],
+  ["ask", "Ask"],
+];
+const tableState = {};
+let current = null;
+
+function renderTabs() {
+  $("#tabs").innerHTML = VIEWS.map(([k, t]) =>
+    `<button data-v="${k}" class="${k === current ? "on" : ""}">${t}</button>`).join("");
+}
+$("#tabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-v]");
+  if (b) location.hash = b.dataset.v;
+});
+window.addEventListener("hashchange", route);
+
+function route() {
+  if (!META) return;                    // not logged in yet
+  const v = location.hash.slice(1) || "overview";
+  current = VIEWS.some(([k]) => k === v) ? v : "overview";
+  renderTabs();
+  show(current);
+}
+
+function show(v) {
+  if (v === "overview") return showOverview();
+  if (v === "photos") return showPhotos();
+  if (v === "ask") return showAsk();
+  if (v === "users") return showUsers();
+  return showTable(v);
+}
+
+// ── Last / next update ───────────────────────────────────────────────────────
+
+let refreshTimer = null;
+function renderUpdated(u) {
+  $("#updated").hidden = false;
+  const last = sgParts(u.last), next = sgParts(u.next);
+  const day = p => `${p.d} ${MONTHS[p.m]}`;
+  $("#updated").innerHTML =
+    `<span><span class="dot"></span>Updated <b>${day(last)}, ${fmtTime(last)}</b></span>` +
+    `<span>Next update <b>${fmtTime(next)}</b></span>` +
+    (u.waiting ? `<span>${fmtN(u.waiting)} post${u.waiting === 1 ? "" : "s"} waiting</span>` : "");
+
+  // The record only moves at the bot's batch slots, so reload just after the
+  // next one rather than polling. Two minutes' grace lets the batch finish.
+  clearTimeout(refreshTimer);
+  const wait = Math.max(60e3, new Date(u.next) - Date.now() + 120e3);
+  refreshTimer = setTimeout(() => { loadUpdated(); if (current !== "ask") show(current); }, wait);
+}
+async function loadUpdated() {
+  try { renderUpdated((await api("/api/overview")).updated); } catch {}
+}
+
+// ── Overview ─────────────────────────────────────────────────────────────────
+
+function notices() {
+  const out = [];
+  if (!META.site_configured) out.push("Site data is not connected yet (DASHBOARD_SITE_GROUP_ID is not set).");
+  if (!META.tunnel_configured) out.push("Tunnel data is not connected yet (TUNNEL_GROUP_IDS is not set).");
+  return out.map(t => `<div class="notice">${esc(t)}</div>`).join("");
+}
+
+function barChart(rows) {
+  if (!rows.length) return `<div class="empty">No entries in the last 30 days.</div>`;
+  // Fill missing days with zero so the axis is real calendar time.
+  const byDay = Object.fromEntries(rows.map(r => [r.day, r.entries]));
+  const days = [];
+  const end = new Date(rows[rows.length - 1].day + "T00:00:00Z");
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(end.getTime() - i * 864e5).toISOString().slice(0, 10);
+    days.push([d, byDay[d] || 0]);
+  }
+  const max = Math.max(...days.map(d => d[1]), 1);
+  const W = 900, H = 200, pad = 22, bw = (W - pad) / days.length;
+  const bars = days.map(([d, n], i) => {
+    const h = (n / max) * (H - pad - 8);
+    const x = pad + i * bw + 2, y = H - pad - h;
+    const lbl = i % 5 === 0 || i === days.length - 1
+      ? `<text x="${x + bw / 2 - 2}" y="${H - 6}" text-anchor="middle">${+d.slice(8)} ${MONTHS[+d.slice(5, 7) - 1]}</text>` : "";
+    return `<rect class="bar" x="${x}" y="${y}" width="${bw - 4}" height="${Math.max(h, n ? 2 : 0)}" rx="2"><title>${fmtDate(d)}: ${n} entries</title></rect>${lbl}`;
+  }).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Site entries per day">
+    <text x="0" y="12">${max}</text>${bars}</svg>`;
+}
+
+function hbars(rows, key, val) {
+  if (!rows.length) return `<div class="empty">Nothing yet.</div>`;
+  const max = Math.max(...rows.map(r => r[val]), 1);
+  return rows.map(r => `<div class="hbar"><span class="name" title="${esc(r[key])}">${esc(r[key])}</span>
+    <div class="track"><div class="fill" style="width:${(r[val] / max) * 100}%"></div></div>
+    <span class="n">${fmtN(r[val])}</span></div>`).join("");
+}
+
+async function showOverview() {
+  const view = $("#view");
+  view.innerHTML = `<div class="empty"><span class="spinner"></span>Loading…</div>`;
+  let o;
+  try { o = await api("/api/overview"); }
+  catch (e) { view.innerHTML = `<div class="notice">Couldn't load the overview: ${esc(e.message)}</div>`; return; }
+  renderUpdated(o.updated);
+
+  const drives = o.drives.length ? o.drives.map(d => {
+    const pct = d.pct_complete != null ? Number(d.pct_complete)
+      : (d.total_rings ? (d.current_ring / d.total_rings) * 100 : null);
+    return `<div class="drive">
+      <div class="row1"><span><b>${esc(d.contract)}</b> · ${esc(d.drive)}</span>
+        <span>${pct != null ? pct.toFixed(1) + "%" : "—"}</span></div>
+      <div class="track" style="margin-top:6px"><div class="fill" style="width:${Math.min(pct || 0, 100)}%"></div></div>
+      <div class="meta">Ring ${fmtN(d.current_ring)} of ${fmtN(d.total_rings)} · ${fmtDate(d.report_date)}${d.shift ? " " + esc(d.shift) : ""}
+        ${d.tbm_location ? " · " + esc(d.tbm_location) : ""}</div></div>`;
+  }).join("") : `<div class="empty">No tunnel reports yet.</div>`;
+
+  const flags = o.recent_flags.length ? o.recent_flags.map(f => `<div class="flag">${esc(f.flag_text)}
+    <div class="meta">${esc(f.contract || "")}${f.drive ? " · " + esc(f.drive) : ""} · ${fmtDate(f.sent_date)}</div></div>`).join("")
+    : `<div class="empty">No flagged items.</div>`;
+
+  view.innerHTML = `${notices()}
+  <div class="grid kpis">
+    <div class="card kpi"><div class="l">Site log entries</div><div class="v">${fmtN(o.logs.total)}</div>
+      <div class="s">${o.logs.first ? fmtDate(o.logs.first) + " – " + fmtDate(o.logs.last) : "—"}</div></div>
+    <div class="card kpi"><div class="l">Entries, last 7 days</div><div class="v">${fmtN(o.logs.last_7_days)}</div><div class="s">Site time</div></div>
+    <div class="card kpi"><div class="l">D-wall panels</div><div class="v">${fmtN(o.panels.total)}</div><div class="s">Recorded</div></div>
+    <div class="card kpi"><div class="l">Site photos</div><div class="v">${fmtN(o.photos.total)}</div><div class="s">Stored</div></div>
+    <div class="card kpi"><div class="l">Flagged items, 7 days</div><div class="v">${fmtN(o.flags.last_7_days)}</div><div class="s">${fmtN(o.flags.total)} in all</div></div>
+  </div>
+  <div class="grid two" style="margin-top:16px">
+    <div class="card chart"><h2>Site entries per day — last 30 days</h2>${barChart(o.per_day)}</div>
+    <div class="card"><h2>Busiest locations — 30 days</h2>${hbars(o.top_locations, "location", "entries")}</div>
+  </div>
+  <div class="grid two" style="margin-top:16px">
+    <div class="card"><h2>Tunnel drives — latest report</h2>${drives}</div>
+    <div class="card"><h2>Recent flagged items</h2>${flags}</div>
+  </div>`;
+}
+
+// ── Tables ───────────────────────────────────────────────────────────────────
+
+function query(st, extra = {}) {
+  const p = new URLSearchParams();
+  if (st.q) p.set("q", st.q);
+  if (st.from) p.set("from", st.from);
+  if (st.to) p.set("to", st.to);
+  for (const [k, v] of Object.entries(extra)) p.set(k, v);
+  return p.toString();
+}
+
+function showTable(name) {
+  const cfg = META.tables[name];
+  const st = tableState[name] ||= {q: "", from: "", to: "", page: 1, size: 50};
+  $("#view").innerHTML = `${notices()}
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Search ${esc(cfg.title.toLowerCase())}…" value="${esc(st.q)}">
+      <label class="inl">From <input type="date" id="from" value="${st.from}"></label>
+      <label class="inl">To <input type="date" id="to" value="${st.to}"></label>
+      <button class="btn" id="clear">Clear</button>
+      <button class="btn primary" id="export">Download Excel</button>
+    </div>
+    <div class="tablewrap"><table><thead><tr>${cfg.list.map(c => `<th>${esc(label(c))}</th>`).join("")}</tr></thead>
+      <tbody id="rows"><tr><td colspan="${cfg.list.length}" class="empty"><span class="spinner"></span>Loading…</td></tr></tbody></table></div>
+    <div class="pager"><span id="count"></span><div class="btns">
+      <button class="btn" id="prev">← Previous</button><button class="btn" id="next">Next →</button></div></div>`;
+
+  let rows = [];
+  const load = async () => {
+    const body = $("#rows");
+    try {
+      const r = await api(`/api/table/${name}?${query(st, {page: st.page, size: st.size})}`);
+      if (current !== name) return;
+      rows = r.rows;
+      body.innerHTML = rows.length ? rows.map((row, i) => `<tr data-i="${i}">${cfg.list.map(c => {
+        const cls = NUMERIC.has(c) ? "num" : (TIMESTAMP.has(c) || DATE.has(c) ? "nowrap" : "");
+        return `<td class="${cls}">${esc(cellText(c, row[c]))}</td>`;
+      }).join("")}</tr>`).join("")
+        : `<tr><td colspan="${cfg.list.length}" class="empty">No entries match.</td></tr>`;
+      const first = r.total ? (st.page - 1) * st.size + 1 : 0;
+      $("#count").textContent = `${fmtN(first)}–${fmtN(Math.min(st.page * st.size, r.total))} of ${fmtN(r.total)}`;
+      $("#prev").disabled = st.page <= 1;
+      $("#next").disabled = st.page * st.size >= r.total;
+    } catch (e) {
+      body.innerHTML = `<tr><td colspan="${cfg.list.length}" class="empty">Couldn't load: ${esc(e.message)}</td></tr>`;
+    }
+  };
+
+  const reset = () => { st.page = 1; load(); };
+  $("#q").addEventListener("input", debounce(e => { st.q = e.target.value.trim(); reset(); }, 300));
+  $("#from").addEventListener("change", e => { st.from = e.target.value; reset(); });
+  $("#to").addEventListener("change", e => { st.to = e.target.value; reset(); });
+  $("#clear").addEventListener("click", () => { Object.assign(st, {q: "", from: "", to: ""}); showTable(name); });
+  $("#prev").addEventListener("click", () => { st.page--; load(); });
+  $("#next").addEventListener("click", () => { st.page++; load(); });
+  $("#export").addEventListener("click", () => { location.href = `/api/table/${name}/export?${query(st)}`; });
+  $("#rows").addEventListener("click", e => {
+    const tr = e.target.closest("tr[data-i]");
+    if (tr) openDrawer(cfg, rows[+tr.dataset.i]);
+  });
+  load();
+}
+
+function openDrawer(cfg, row) {
+  $("#drawerTitle").textContent = cfg.title.replace(/s$/, "");
+  $("#drawerBody").innerHTML = cfg.columns.filter(c => row[c] != null && row[c] !== "" &&
+      !(Array.isArray(row[c]) && !row[c].length))
+    .map(c => `<dt>${esc(label(c))}</dt><dd>${esc(cellText(c, row[c]))}</dd>`).join("");
+  $("#drawer").classList.add("open");
+  $("#drawerBg").classList.add("open");
+}
+const closeDrawer = () => { $("#drawer").classList.remove("open"); $("#drawerBg").classList.remove("open"); };
+$("#drawerClose").addEventListener("click", closeDrawer);
+$("#drawerBg").addEventListener("click", closeDrawer);
+
+// ── Photos ───────────────────────────────────────────────────────────────────
+
+function photoCard(p) {
+  const place = [p.main_location, p.sub_location].filter(Boolean).join(" · ") || p.caption || "Site photo";
+  return `<div class="ph" data-id="${p.id}" data-info="${esc(JSON.stringify(p))}">
+    <img loading="lazy" src="/api/photo/${p.id}?thumb=1" alt="${esc(place)}">
+    <div class="cap"><b>${esc(place)}</b><span>${fmtDateTime(p.sent_at)}${p.sender_name ? " · " + esc(p.sender_name) : ""}</span></div></div>`;
+}
+
+function openLightbox(el) {
+  const p = JSON.parse(el.dataset.info);
+  $("#lbImg").src = `/api/photo/${p.id}`;
+  $("#lbInfo").innerHTML = [
+    [p.main_location, p.sub_location].filter(Boolean).map(esc).join(" · "),
+    p.description ? esc(p.description) : "",
+    p.caption ? `“${esc(p.caption)}”` : "",
+    `${fmtDateTime(p.sent_at)}${p.sender_name ? " · " + esc(p.sender_name) : ""}`,
+  ].filter(Boolean).join("<br>");
+  $("#lightbox").classList.add("open");
+}
+$("#lbClose").addEventListener("click", () => $("#lightbox").classList.remove("open"));
+$("#lightbox").addEventListener("click", e => { if (e.target.id === "lightbox") $("#lightbox").classList.remove("open"); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") { closeDrawer(); $("#lightbox").classList.remove("open"); } });
+document.addEventListener("click", e => { const ph = e.target.closest(".ph"); if (ph) openLightbox(ph); });
+
+function showPhotos() {
+  const st = tableState.photos ||= {q: "", from: "", to: "", page: 1, size: 48};
+  $("#view").innerHTML = `${notices()}
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Search by location, activity, caption or sender…" value="${esc(st.q)}">
+      <label class="inl">From <input type="date" id="from" value="${st.from}"></label>
+      <label class="inl">To <input type="date" id="to" value="${st.to}"></label>
+      <button class="btn" id="clear">Clear</button>
+    </div>
+    <div class="photos" id="grid"><div class="empty"><span class="spinner"></span>Loading…</div></div>
+    <div class="pager"><span id="count"></span><div class="btns">
+      <button class="btn" id="prev">← Previous</button><button class="btn" id="next">Next →</button></div></div>`;
+
+  const load = async () => {
+    try {
+      const r = await api(`/api/photos?${query(st, {page: st.page, size: st.size})}`);
+      if (current !== "photos") return;
+      $("#grid").innerHTML = r.rows.length ? r.rows.map(photoCard).join("") : `<div class="empty">No photos match.</div>`;
+      const first = r.total ? (st.page - 1) * st.size + 1 : 0;
+      $("#count").textContent = `${fmtN(first)}–${fmtN(Math.min(st.page * st.size, r.total))} of ${fmtN(r.total)} photos`;
+      $("#prev").disabled = st.page <= 1;
+      $("#next").disabled = st.page * st.size >= r.total;
+    } catch (e) {
+      $("#grid").innerHTML = `<div class="empty">Couldn't load: ${esc(e.message)}</div>`;
+    }
+  };
+  const reset = () => { st.page = 1; load(); };
+  $("#q").addEventListener("input", debounce(e => { st.q = e.target.value.trim(); reset(); }, 300));
+  $("#from").addEventListener("change", e => { st.from = e.target.value; reset(); });
+  $("#to").addEventListener("change", e => { st.to = e.target.value; reset(); });
+  $("#clear").addEventListener("click", () => { Object.assign(st, {q: "", from: "", to: ""}); showPhotos(); });
+  $("#prev").addEventListener("click", () => { st.page--; load(); window.scrollTo(0, 0); });
+  $("#next").addEventListener("click", () => { st.page++; load(); window.scrollTo(0, 0); });
+  load();
+}
+
+// ── Ask ──────────────────────────────────────────────────────────────────────
+
+const EXAMPLES = {
+  site: ["What was done yesterday?", "Which locations had casting this week?",
+         "How many entries were logged at U3 last month?", "Show me photos of Zone 3 from last week"],
+  tunnel: ["How far along is each drive?", "Any instrumentation breaching AL this week?",
+           "Rings built per contract yesterday", "What items were flagged today?"],
+};
+const askState = {scope: "site", thread: []};
+
+function renderThread() {
+  const t = $("#thread");
+  if (!t) return;
+  t.innerHTML = askState.thread.map(m => {
+    if (m.role === "q") return `<div class="msg q"><div class="tag">${m.scope === "tunnel" ? "Tunnel" : "Site"}</div>${esc(m.text)}</div>`;
+    if (m.pending) return `<div class="msg a"><span class="spinner"></span>Searching the record…</div>`;
+    if (m.error) return `<div class="msg a err">${esc(m.error)}</div>`;
+    if (m.kind === "photos") {
+      const total = m.sections.reduce((n, s) => n + s.photos.length, 0);
+      if (!total) return `<div class="msg a">I couldn't find any photos for that.</div>`;
+      return `<div class="msg a" style="white-space:normal;max-width:100%">
+        <b>${total} photo${total === 1 ? "" : "s"}</b>${m.period ? " · " + esc(m.period) : ""}
+        ${m.sections.map(s => `<h4>${esc(s.title)} (${s.photos.length})</h4>
+          <div class="photos">${s.photos.map(photoCard).join("") || '<div class="empty">None found.</div>'}</div>`).join("")}
+        ${m.capped ? `<p class="s">Some photos were left out — narrow the dates to see the rest.</p>` : ""}</div>`;
+    }
+    return `<div class="msg a">${renderWhatsApp(m.answer)}</div>`;
+  }).join("");
+}
+
+function showAsk() {
+  $("#view").innerHTML = `${notices()}<div class="ask">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div><b>Ask the record</b><div class="s" style="color:var(--muted);font-size:13px">
+          Plain-language questions, answered from the whole database — the same as /ask in WhatsApp.</div></div>
+        <div class="scope" id="scope"><button data-s="site">Site</button><button data-s="tunnel">Tunnel</button></div>
+      </div>
+      <div class="askbox"><textarea id="question" rows="2" maxlength="500" placeholder="e.g. What was cast at U3 last week?"></textarea>
+        <button class="btn primary" id="send">Ask</button></div>
+      <div class="chips" id="chips"></div>
+    </div>
+    <div class="thread" id="thread"></div></div>`;
+
+  const setScope = s => {
+    askState.scope = s;
+    for (const b of $("#scope").children) b.classList.toggle("on", b.dataset.s === s);
+    $("#chips").innerHTML = EXAMPLES[s].map(x => `<button class="chip">${esc(x)}</button>`).join("");
+  };
+  $("#scope").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setScope(b.dataset.s); });
+  $("#chips").addEventListener("click", e => { const c = e.target.closest(".chip"); if (c) { $("#question").value = c.textContent; send(); } });
+  $("#send").addEventListener("click", send);
+  $("#question").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+  setScope(askState.scope);
+  renderThread();
+}
+
+async function send() {
+  const q = $("#question").value.trim();
+  if (q.length < 2) return;
+  $("#question").value = "";
+  $("#send").disabled = true;
+  const scope = askState.scope;
+  const answer = {role: "a", pending: true};
+  askState.thread.unshift(answer);
+  askState.thread.unshift({role: "q", text: q, scope});
+  renderThread();
+  try {
+    Object.assign(answer, await api("/api/ask", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({question: q, scope}),
+    }));
+  } catch (e) {
+    answer.error = e.message;
+  }
+  answer.pending = false;
+  if ($("#send")) $("#send").disabled = false;
+  renderThread();
+}
+
+// ── Users (admins only) ──────────────────────────────────────────────────────
+
+function secretBox(email, password, what) {
+  return `<div class="secret">${what} for <b>${esc(email)}</b>. Give them this one-time password —
+    it is shown only now. They will choose their own when they first log in.<br>
+    <code>${esc(password)}</code> <button class="btn" id="copy" style="margin-left:8px">Copy</button></div>`;
+}
+
+async function showUsers() {
+  $("#view").innerHTML = `<div class="card">
+      <h2>Add someone</h2>
+      <form class="adduser" id="addForm">
+        <input type="email" id="newEmail" placeholder="name@lta.gov.sg" required>
+        <input type="text" id="newName" placeholder="Name (optional)">
+        <label class="inl"><input type="checkbox" id="newAdmin"> Admin</label>
+        <button class="btn primary">Add</button>
+      </form>
+      <div class="formerr" id="addErr"></div>
+      <div id="secret"></div>
+    </div>
+    <div class="tablewrap users" style="margin-top:16px"><table><thead><tr>
+      <th>Email</th><th>Name</th><th>Status</th><th>Last login</th><th>Added</th><th></th></tr></thead>
+      <tbody id="userRows"><tr><td colspan="6" class="empty"><span class="spinner"></span>Loading…</td></tr></tbody></table></div>`;
+
+  const showSecret = (email, password, what) => {
+    $("#secret").innerHTML = secretBox(email, password, what);
+    $("#copy").addEventListener("click", () => navigator.clipboard?.writeText(password));
+  };
+
+  const load = async () => {
+    const {users} = await api("/api/admin/users");
+    $("#userRows").innerHTML = users.map(u => {
+      const self = u.id === ME.id;
+      const badges = [u.is_admin && `<span class="badge admin">Admin</span>`,
+        u.disabled && `<span class="badge off">Disabled</span>`,
+        u.must_change_password && !u.disabled && `<span class="badge">Not logged in yet</span>`]
+        .filter(Boolean).join("") || `<span class="badge">Active</span>`;
+      const actions = self ? `<span class="s" style="color:var(--faint)">You</span>` : `<div class="act">
+        <button class="btn" data-a="reset" data-id="${u.id}" data-email="${esc(u.email)}">Reset password</button>
+        <button class="btn" data-a="${u.disabled ? "enable" : "disable"}" data-id="${u.id}">${u.disabled ? "Enable" : "Disable"}</button>
+        <button class="btn danger" data-a="delete" data-id="${u.id}">Remove</button></div>`;
+      return `<tr><td>${esc(u.email)}</td><td>${esc(u.name || "")}</td><td>${badges}</td>
+        <td class="nowrap">${u.last_login_at ? fmtDateTime(u.last_login_at) : "—"}</td>
+        <td class="nowrap">${fmtDate(u.created_at?.slice(0, 10))}${u.created_by ? `<br><span style="color:var(--faint)">${esc(u.created_by)}</span>` : ""}</td>
+        <td>${actions}</td></tr>`;
+    }).join("");
+  };
+
+  $("#addForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    $("#addErr").textContent = "";
+    try {
+      const r = await post("/api/admin/users", {email: $("#newEmail").value.trim(),
+        name: $("#newName").value.trim(), is_admin: $("#newAdmin").checked});
+      showSecret(r.user.email, r.temporary_password, "Account created");
+      $("#addForm").reset();
+      load();
+    } catch (err) { $("#addErr").textContent = err.message; }
+  });
+
+  $("#userRows").addEventListener("click", async e => {
+    const b = e.target.closest("button[data-a]");
+    if (!b) return;
+    const id = b.dataset.id;
+    try {
+      if (b.dataset.a === "delete") {
+        // Two clicks rather than a browser dialog.
+        if (!b.classList.contains("armed")) {
+          b.classList.add("armed"); b.textContent = "Confirm remove";
+          setTimeout(() => { b.classList.remove("armed"); b.textContent = "Remove"; }, 4000);
+          return;
+        }
+        await api(`/api/admin/users/${id}`, {method: "DELETE"});
+      } else if (b.dataset.a === "reset") {
+        const r = await post(`/api/admin/users/${id}/reset`);
+        showSecret(b.dataset.email, r.temporary_password, "Password reset");
+      } else {
+        await post(`/api/admin/users/${id}/disabled`, {disabled: b.dataset.a === "disable"});
+      }
+      load();
+    } catch (err) { $("#addErr").textContent = err.message; }
+  });
+
+  try { await load(); }
+  catch (e) { $("#userRows").innerHTML = `<tr><td colspan="6" class="empty">${esc(e.message)}</td></tr>`; }
+}
+
+// ── Login ────────────────────────────────────────────────────────────────────
+
+function signedOutChrome() {
+  META = null; ME = null;
+  clearTimeout(refreshTimer);
+  const users = VIEWS.findIndex(([k]) => k === "users");
+  if (users >= 0) VIEWS.splice(users, 1);
+  $("#tabs").innerHTML = "";
+  $("#tabs").hidden = true;
+  $("#updated").hidden = true;
+  $("#userbox").hidden = true;
+}
+
+function showLogin(message = "") {
+  signedOutChrome();
+  $("#view").innerHTML = `<div class="auth"><form class="card" id="loginForm">
+      <h2>Log in</h2><p>Access is by invitation. Ask the dashboard's admin for an account.</p>
+      <label for="email">Email</label><input type="email" id="email" autocomplete="username" required>
+      <label for="password">Password</label><input type="password" id="password" autocomplete="current-password" required>
+      <button class="btn primary">Log in</button>
+      <div class="formerr" id="loginErr">${esc(message)}</div></form></div>`;
+  $("#email").focus();
+  $("#loginForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    $("#loginErr").textContent = "";
+    try {
+      const {user} = await post("/api/login", {email: $("#email").value.trim(), password: $("#password").value});
+      start(user);
+    } catch (err) { $("#loginErr").textContent = err.message; }
+  });
+}
+
+function showChangePassword(forced) {
+  if (forced) signedOutChrome();
+  $("#view").innerHTML = `<div class="auth"><form class="card" id="pwForm">
+      <h2>${forced ? "Choose your password" : "Change password"}</h2>
+      <p>${forced ? "You logged in with a one-time password. Choose your own to continue." : "At least 10 characters."}</p>
+      <label for="cur">${forced ? "One-time password" : "Current password"}</label>
+      <input type="password" id="cur" autocomplete="current-password" required>
+      <label for="pw1">New password</label><input type="password" id="pw1" autocomplete="new-password" minlength="10" required>
+      <label for="pw2">New password again</label><input type="password" id="pw2" autocomplete="new-password" minlength="10" required>
+      <button class="btn primary">Save password</button>
+      ${forced ? "" : `<button type="button" class="btn" id="pwCancel" style="margin-top:8px">Cancel</button>`}
+      <div class="formerr" id="pwErr"></div></form></div>`;
+  $("#cur").focus();
+  $("#pwCancel")?.addEventListener("click", () => show(current));
+  $("#pwForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    if ($("#pw1").value !== $("#pw2").value) { $("#pwErr").textContent = "The new passwords don't match."; return; }
+    try {
+      await post("/api/me/password", {current: $("#cur").value, new: $("#pw1").value});
+      const {user} = await api("/api/me");
+      start(user);
+    } catch (err) { $("#pwErr").textContent = err.message; }
+  });
+}
+
+function renderUserbox() {
+  $("#userbox").hidden = false;
+  $("#userbox").innerHTML = `<span>${esc(ME.name || ME.email)}</span>
+    <button id="chpw">Change password</button><button id="logout">Log out</button>`;
+  $("#chpw").addEventListener("click", () => showChangePassword(false));
+  $("#logout").addEventListener("click", async () => {
+    try { await post("/api/logout"); } catch {}
+    showLogin();
+  });
+}
+
+// ── Start ────────────────────────────────────────────────────────────────────
+
+async function start(user) {
+  ME = user;
+  if (ME.must_change_password) return showChangePassword(true);
+  if (ME.is_admin && !VIEWS.some(([k]) => k === "users")) VIEWS.push(["users", "Users"]);
+  try { META = await api("/api/meta"); }
+  catch (e) { $("#view").innerHTML = `<div class="notice">Couldn't reach the server: ${esc(e.message)}</div>`; return; }
+  $("#tabs").hidden = false;
+  renderUserbox();
+  route();
+  if (current !== "overview") loadUpdated();
+}
+
+(async () => {
+  let me;
+  try { me = await api("/api/me"); }
+  catch { return; }                     // api() has already shown the login form on 401
+  start(me.user);
+})();
+</script>
+</body>
+</html>
