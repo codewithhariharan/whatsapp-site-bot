@@ -102,13 +102,27 @@ def test_phone_numbers_and_raw_text_are_never_selected():
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("path", ["/api/meta", "/api/overview", "/api/table/daily_logs",
-                                  "/api/table/daily_logs/export", "/api/photos",
-                                  "/api/photo/1"])
-def test_data_needs_a_login(monkeypatch, groups, path):
+                                  "/api/table/daily_logs/export", "/api/photos"])
+def test_the_record_is_public(monkeypatch, groups, path):
+    monkeypatch.setattr(dashboard.db, "_fetch", lambda *a: [{"n": 0}])
+    app = FastAPI()
+    app.include_router(dashboard.router)
+    assert TestClient(app).get(path).status_code == 200
+
+
+@pytest.mark.parametrize("path,body", [("/api/ask", {"question": "what happened today"}),
+                                       ("/api/console", {"text": "/help"})])
+def test_ask_and_console_need_a_login(monkeypatch, groups, path, body):
     monkeypatch.setattr(dashboard.db, "_fetch", lambda *a: pytest.fail("queried without a login"))
     app = FastAPI()
     app.include_router(dashboard.router)
-    assert TestClient(app).get(path).status_code == 401
+    assert TestClient(app).post(path, json=body).status_code == 401
+
+
+def test_search_engines_are_turned_away():
+    app = FastAPI()
+    app.include_router(dashboard.router)
+    assert "Disallow: /" in TestClient(app).get("/robots.txt").text
 
 
 def test_page_loads_without_a_login():

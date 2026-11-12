@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
 <title>Site Record</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
@@ -211,6 +212,17 @@ details.sql pre { white-space: pre-wrap; word-break: break-word; background: var
 .mail { width: 100%; max-width: 100%; }
 .mail iframe { width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 8px; background: #fff; margin-top: 8px; }
 
+a.btn { text-decoration: none; display: inline-block; }
+.gate { max-width: 520px; margin: 40px auto; text-align: center; padding: 28px; }
+.gate p { color: var(--muted); margin: 6px 0 18px; }
+.upload { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+.upload input[type=text] { flex: 1 1 220px; }
+.upload input[type=file] { flex: 1 1 240px; max-width: 100%; }
+.docs td .act { display: flex; gap: 6px; flex-wrap: wrap; }
+.kind { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px;
+  background: var(--accent); color: var(--brand-2); text-transform: uppercase; }
+.kind.pdf { background: var(--bad-bg); color: var(--bad); }
+
 @media (max-width: 640px) {
   header.top, main { padding-left: 16px; padding-right: 16px; }
   .updated { margin-left: 0; }
@@ -299,14 +311,17 @@ function cellText(col, v) {
   return String(v);
 }
 
-// A 401 anywhere means the session ended (logged out elsewhere, removed by an
-// admin, expired): drop back to the login form rather than show an error.
+// The record is public; a 401 only comes from what needs a login. For someone
+// who was logged in it means the session ended (logged out elsewhere, removed
+// by an admin, expired): offer the login form rather than show an error.
 async function api(path, opts) {
   const r = await fetch(path, {credentials: "same-origin", ...opts});
   if (!r.ok) {
     let detail = `${r.status} ${r.statusText}`;
     try { detail = (await r.json()).detail || detail; } catch {}
-    if (r.status === 401 && path !== "/api/login") { showLogin(); }
+    if (r.status === 401 && ME && path !== "/api/login" && path !== "/api/me") {
+      ME = null; showLogin("Your session has ended. Please log in again.");
+    }
     throw new Error(detail);
   }
   return r.json();
@@ -332,6 +347,7 @@ const VIEWS = [
   ["tunnel_progress", "Tunnel progress"],
   ["tunnel_flags", "Flagged items"],
   ["photos", "Photos"],
+  ["documents", "Documents"],
   ["ask", "Ask"],
   ["console", "Console"],
 ];
@@ -344,7 +360,9 @@ function renderTabs() {
 }
 $("#tabs").addEventListener("click", e => {
   const b = e.target.closest("button[data-v]");
-  if (b) location.hash = b.dataset.v;
+  if (!b) return;
+  // From the login form the hash may already be this tab's.
+  if (location.hash.slice(1) === b.dataset.v) route(); else location.hash = b.dataset.v;
 });
 window.addEventListener("hashchange", route);
 
@@ -359,6 +377,7 @@ function route() {
 function show(v) {
   if (v === "overview") return showOverview();
   if (v === "photos") return showPhotos();
+  if (v === "documents") return showDocuments();
   if (v === "ask") return showAsk();
   if (v === "users") return showUsers();
   if (v === "console") return showConsole();
@@ -381,7 +400,7 @@ function renderUpdated(u) {
   // next one rather than polling. Two minutes' grace lets the batch finish.
   clearTimeout(refreshTimer);
   const wait = Math.max(60e3, new Date(u.next) - Date.now() + 120e3);
-  refreshTimer = setTimeout(() => { loadUpdated(); if (current !== "ask") show(current); }, wait);
+  refreshTimer = setTimeout(() => { loadUpdated(); if (!["ask", "console", "login"].includes(current)) show(current); }, wait);
 }
 async function loadUpdated() {
   try { renderUpdated((await api("/api/overview")).updated); } catch {}
@@ -679,7 +698,17 @@ function renderThread() {
   }).join("");
 }
 
+// Ask and the Console cost Gemini calls and run the bot, so they need a login.
+function gate(what) {
+  $("#view").innerHTML = `<div class="card gate"><b>Log in to ${what}</b>
+    <p>Anyone can browse the record, photos and documents. ${what[0].toUpperCase() + what.slice(1)}
+      needs an account — ask the dashboard's admin for one.</p>
+    <button class="btn primary" id="gateLogin">Log in</button></div>`;
+  $("#gateLogin").addEventListener("click", () => showLogin());
+}
+
 function showAsk() {
+  if (!ME) return gate("ask questions");
   $("#view").innerHTML = `${notices()}<div class="ask">
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
@@ -778,6 +807,7 @@ function renderConsoleLog() {
 }
 
 function showConsole() {
+  if (!ME) return gate("use the console");
   $("#view").innerHTML = `<div class="console">
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
@@ -826,6 +856,86 @@ async function runConsole() {
                           ...replies.map(r => ({role: "a", ...r})));
   if ($("#crun")) $("#crun").disabled = false;
   renderConsoleLog();
+}
+
+// ── Documents ────────────────────────────────────────────────────────────────
+
+const docsState = {q: ""};
+const fmtSize = b => b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
+
+function showDocuments() {
+  $("#view").innerHTML = `<div class="card">
+      <b>Documents</b>
+      <div style="color:var(--muted);font-size:13px">PDFs and Excel files shared with the site record. Anyone with this page can open them.</div>
+      ${ME ? `<form class="upload" id="upForm">
+          <input type="file" id="upFile" accept=".pdf,.xlsx,.xlsm,.xls" required>
+          <input type="text" id="upNote" maxlength="300" placeholder="Note (optional), e.g. Rev B drawings for U3">
+          <button class="btn primary" id="upBtn">Upload</button></form>
+        <div class="formerr" id="upErr"></div>`
+      : `<div style="margin-top:10px;font-size:13px;color:var(--muted)">To upload a file, <a href="#" id="upLogin">log in</a>.</div>`}
+    </div>
+    <div class="toolbar" style="margin-top:16px">
+      <input type="search" id="q" placeholder="Search by name, note or uploader…" value="${esc(docsState.q)}"></div>
+    <div class="tablewrap docs"><table><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Note</th>
+      <th>Uploaded by</th><th>Uploaded</th><th></th></tr></thead>
+      <tbody id="docRows"><tr><td colspan="7" class="empty"><span class="spinner"></span>Loading…</td></tr></tbody></table></div>
+    <div class="formerr" id="docErr"></div>`;
+
+  let maxMb = 25;
+  const load = async () => {
+    try {
+      const r = await api(`/api/documents?${new URLSearchParams(docsState.q ? {q: docsState.q} : {})}`);
+      if (current !== "documents") return;
+      maxMb = r.max_mb;
+      $("#docRows").innerHTML = r.documents.length ? r.documents.map(d => {
+        const href = `/api/documents/${d.id}`;
+        return `<tr><td><a href="${href}" target="_blank" rel="noopener">${esc(d.filename)}</a></td>
+          <td><span class="kind ${d.kind === "pdf" ? "pdf" : ""}">${esc(d.kind)}</span></td>
+          <td class="nowrap num">${fmtSize(d.size_bytes)}</td>
+          <td>${esc(d.note || "")}</td><td>${esc(d.uploaded_by || "")}</td>
+          <td class="nowrap">${fmtDateTime(d.uploaded_at)}</td>
+          <td><div class="act"><a class="btn" href="${href}?download=1">Download</a>
+            ${d.can_delete ? `<button class="btn danger" data-del="${d.id}">Remove</button>` : ""}</div></td></tr>`;
+      }).join("") : `<tr><td colspan="7" class="empty">${docsState.q ? "No documents match." : "No documents yet."}</td></tr>`;
+    } catch (e) {
+      $("#docRows").innerHTML = `<tr><td colspan="7" class="empty">Couldn't load: ${esc(e.message)}</td></tr>`;
+    }
+  };
+
+  $("#q").addEventListener("input", debounce(e => { docsState.q = e.target.value.trim(); load(); }, 300));
+  $("#upLogin")?.addEventListener("click", e => { e.preventDefault(); showLogin(); });
+  $("#upForm")?.addEventListener("submit", async e => {
+    e.preventDefault();
+    const file = $("#upFile").files[0];
+    $("#upErr").textContent = "";
+    if (!file) return;
+    if (!/\.(pdf|xlsx|xlsm|xls)$/i.test(file.name)) { $("#upErr").textContent = "Only PDF and Excel files can be uploaded."; return; }
+    if (file.size > maxMb * 1048576) { $("#upErr").textContent = `That file is over ${maxMb} MB.`; return; }
+    const btn = $("#upBtn");
+    btn.disabled = true; btn.innerHTML = `<span class="spinner"></span>Uploading…`;
+    try {
+      const params = new URLSearchParams({filename: file.name, note: $("#upNote").value.trim()});
+      await api(`/api/documents?${params}`, {method: "POST",
+        headers: {"Content-Type": "application/octet-stream"}, body: file});
+      $("#upForm").reset();
+      load();
+    } catch (err) { if ($("#upErr")) $("#upErr").textContent = err.message; }
+    btn.disabled = false; btn.textContent = "Upload";
+  });
+  $("#docRows").addEventListener("click", async e => {
+    const b = e.target.closest("button[data-del]");
+    if (!b) return;
+    // Two clicks rather than a browser dialog.
+    if (!b.classList.contains("armed")) {
+      b.classList.add("armed"); b.textContent = "Confirm remove";
+      setTimeout(() => { b.classList.remove("armed"); b.textContent = "Remove"; }, 4000);
+      return;
+    }
+    $("#docErr").textContent = "";
+    try { await api(`/api/documents/${b.dataset.del}`, {method: "DELETE"}); load(); }
+    catch (err) { $("#docErr").textContent = err.message; }
+  });
+  load();
 }
 
 // ── Users (admins only) ──────────────────────────────────────────────────────
@@ -917,26 +1027,27 @@ async function showUsers() {
 
 // ── Login ────────────────────────────────────────────────────────────────────
 
-function signedOutChrome() {
-  META = null; ME = null;
+// Only while a one-time password must be replaced: nothing else is reachable.
+function hideChrome() {
   clearTimeout(refreshTimer);
-  const users = VIEWS.findIndex(([k]) => k === "users");
-  if (users >= 0) VIEWS.splice(users, 1);
-  $("#tabs").innerHTML = "";
   $("#tabs").hidden = true;
   $("#updated").hidden = true;
   $("#userbox").hidden = true;
 }
 
 function showLogin(message = "") {
-  signedOutChrome();
+  current = "login";
+  if (META) renderTabs();
   $("#view").innerHTML = `<div class="auth"><form class="card" id="loginForm">
-      <h2>Log in</h2><p>Access is by invitation. Ask the dashboard's admin for an account.</p>
+      <h2>Log in</h2><p>Anyone can browse the record. Logging in lets you ask questions, use the console
+        and upload documents. Accounts are by invitation — ask the dashboard's admin.</p>
       <label for="email">Email</label><input type="email" id="email" autocomplete="username" required>
       <label for="password">Password</label><input type="password" id="password" autocomplete="current-password" required>
       <button class="btn primary">Log in</button>
+      ${META ? `<button type="button" class="btn" id="loginBack" style="margin-top:8px">Back to the record</button>` : ""}
       <div class="formerr" id="loginErr">${esc(message)}</div></form></div>`;
   $("#email").focus();
+  $("#loginBack")?.addEventListener("click", route);
   $("#loginForm").addEventListener("submit", async e => {
     e.preventDefault();
     $("#loginErr").textContent = "";
@@ -948,7 +1059,7 @@ function showLogin(message = "") {
 }
 
 function showChangePassword(forced) {
-  if (forced) signedOutChrome();
+  if (forced) hideChrome();
   $("#view").innerHTML = `<div class="auth"><form class="card" id="pwForm">
       <h2>${forced ? "Choose your password" : "Change password"}</h2>
       <p>${forced ? "You logged in with a one-time password. Choose your own to continue." : "At least 10 characters."}</p>
@@ -974,23 +1085,33 @@ function showChangePassword(forced) {
 
 function renderUserbox() {
   $("#userbox").hidden = false;
+  if (!ME) {
+    $("#userbox").innerHTML = `<button id="login">Log in</button>`;
+    $("#login").addEventListener("click", () => showLogin());
+    return;
+  }
   $("#userbox").innerHTML = `<span>${esc(ME.name || ME.email)}</span>
     <button id="chpw">Change password</button><button id="logout">Log out</button>`;
   $("#chpw").addEventListener("click", () => showChangePassword(false));
   $("#logout").addEventListener("click", async () => {
     try { await post("/api/logout"); } catch {}
-    showLogin();
+    start(null);
   });
 }
 
 // ── Start ────────────────────────────────────────────────────────────────────
 
+// `user` is null for a visitor: the record is public, the rest asks for a login.
 async function start(user) {
-  ME = user;
-  if (ME.must_change_password) return showChangePassword(true);
-  if (ME.is_admin && !VIEWS.some(([k]) => k === "users")) VIEWS.push(["users", "Users"]);
-  try { META = await api("/api/meta"); }
-  catch (e) { $("#view").innerHTML = `<div class="notice">Couldn't reach the server: ${esc(e.message)}</div>`; return; }
+  ME = user || null;
+  if (ME && ME.must_change_password) return showChangePassword(true);
+  const users = VIEWS.findIndex(([k]) => k === "users");
+  if (ME?.is_admin) { if (users < 0) VIEWS.push(["users", "Users"]); }
+  else if (users >= 0) VIEWS.splice(users, 1);
+  if (!META) {
+    try { META = await api("/api/meta"); }
+    catch (e) { $("#view").innerHTML = `<div class="notice">Couldn't reach the server: ${esc(e.message)}</div>`; return; }
+  }
   $("#tabs").hidden = false;
   renderUserbox();
   route();
@@ -998,10 +1119,9 @@ async function start(user) {
 }
 
 (async () => {
-  let me;
-  try { me = await api("/api/me"); }
-  catch { return; }                     // api() has already shown the login form on 401
-  start(me.user);
+  let me = null;
+  try { me = (await api("/api/me")).user; } catch {}   // 401: a visitor
+  start(me);
 })();
 </script>
 </body>

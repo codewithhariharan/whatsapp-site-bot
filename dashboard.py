@@ -5,9 +5,10 @@ each table, open a row in full, see the photos, download what is on screen as
 Excel, and ask questions in plain language through the same /ask engines the
 groups use.
 
-The page's address is public; its data is not. Every /api endpoint here needs
-a login, and only people an admin has added have one (dashboard_auth.py).
-Beyond that, three things are deliberately narrow:
+The record is public: anyone with the address can browse the tables and
+photos and download them. What costs money or runs the bot — Ask and the
+Console — needs a login, and only people an admin has added have one
+(dashboard_auth.py). Beyond that, three things are deliberately narrow:
 
   - Nothing here writes. Every endpoint is a SELECT, and the tables and their
     columns come from the allowlist below — never from the request — so a
@@ -45,9 +46,10 @@ from sitetime import site_now, site_today
 
 logger = logging.getLogger("site_bot")
 
-# The page itself loads for anyone, so it can show the login form; everything
-# on `api` needs a session. `router` is what main.py mounts.
+# `public` is the read-only record, open to anyone; everything on `api` needs
+# a session. `router` is what main.py mounts.
 router = APIRouter()
+public = APIRouter()
 api = APIRouter(dependencies=[Depends(current_user)])
 
 _STATIC = Path(__file__).parent / "dashboard"
@@ -188,9 +190,15 @@ def index():
     return FileResponse(_STATIC / "index.html")
 
 
+# Public, but not for search engines: the record names the people on site.
+@router.get("/robots.txt", include_in_schema=False)
+def robots():
+    return Response("User-agent: *\nDisallow: /\n", media_type="text/plain")
+
+
 # ── Data ──────────────────────────────────────────────────────────────────────
 
-@api.get("/api/meta")
+@public.get("/api/meta")
 def meta():
     return {
         "tables": {name: {k: cfg[k] for k in ("title", "columns", "list", "date")}
@@ -200,7 +208,7 @@ def meta():
     }
 
 
-@api.get("/api/overview")
+@public.get("/api/overview")
 def overview():
     site, site_params = _scope_condition("site")
     tunnel, tunnel_params = _scope_condition("tunnel")
@@ -266,7 +274,7 @@ def overview():
     }
 
 
-@api.get("/api/table/{name}")
+@public.get("/api/table/{name}")
 def table(name: str, q: str = "", date_from: date | None = Query(None, alias="from"),
           date_to: date | None = Query(None, alias="to"),
           page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=_MAX_PAGE_SIZE)):
@@ -286,7 +294,7 @@ def _cell(value):
     return value
 
 
-@api.get("/api/table/{name}/export")
+@public.get("/api/table/{name}/export")
 def export(name: str, q: str = "", date_from: date | None = Query(None, alias="from"),
            date_to: date | None = Query(None, alias="to")):
     cfg = _table_or_404(name)
@@ -323,7 +331,7 @@ def export(name: str, q: str = "", date_from: date | None = Query(None, alias="f
 
 # ── Photos ────────────────────────────────────────────────────────────────────
 
-@api.get("/api/photos")
+@public.get("/api/photos")
 def photo_list(q: str = "", date_from: date | None = Query(None, alias="from"),
                date_to: date | None = Query(None, alias="to"),
                page: int = Query(1, ge=1), size: int = Query(48, ge=1, le=_MAX_PAGE_SIZE)):
@@ -354,7 +362,7 @@ def photo_list(q: str = "", date_from: date | None = Query(None, alias="from"),
             "rows": rows}
 
 
-@api.get("/api/photo/{photo_id}")
+@public.get("/api/photo/{photo_id}")
 def photo(photo_id: int, thumb: bool = False):
     cond, params = _scope_condition("site")
     rows = db._fetch(sql.SQL("SELECT image FROM site_photos WHERE id = %s AND {}")
@@ -368,10 +376,9 @@ def photo(photo_id: int, thumb: bool = False):
         buf = io.BytesIO()
         img.convert("RGB").save(buf, "JPEG", quality=75)
         data = buf.getvalue()
-    # A stored photo never changes, so the browser may keep it — privately:
-    # it is behind a login, so no shared cache may.
+    # A stored photo never changes, so the browser may keep it.
     return Response(data, media_type="image/jpeg",
-                    headers={"Cache-Control": "private, max-age=86400"})
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 # ── Ask ───────────────────────────────────────────────────────────────────────
@@ -515,4 +522,5 @@ async def console(body: ConsoleRequest, user: dict = Depends(current_user)):
     return {"replies": [_console_item(i) for i in box]}
 
 
+router.include_router(public)
 router.include_router(api)

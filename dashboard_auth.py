@@ -1,7 +1,8 @@
 """Logins for the web dashboard.
 
-The dashboard's address is public, but only people an admin has added can get
-in. There is no sign-up: an admin adds someone by email, the page shows a
+Anyone can look at the record; asking questions, running commands and
+uploading documents need a login, and only people an admin has added have
+one. There is no sign-up: an admin adds someone by email, the page shows a
 one-time password exactly once for the admin to pass on, and that person must
 choose their own at first login. The first admin is made from the command line
 on the server (manage_dashboard.py), so no password ever travels through the
@@ -155,6 +156,19 @@ def current_user(request: Request) -> dict:
     if user["must_change_password"] and request.url.path not in _ALLOWED_BEFORE_CHANGE:
         raise HTTPException(status_code=403, detail="Choose a new password first.")
     return user
+
+
+def optional_user(request: Request) -> dict | None:
+    """The logged-in user on a public endpoint, or None for a visitor. Used
+    only to decorate what anyone may see (e.g. which documents you may
+    remove), never to grant anything."""
+    if not request.cookies.get(COOKIE):
+        return None
+    try:
+        user = _session_user(request)
+    except HTTPException:
+        return None
+    return None if user["must_change_password"] else user
 
 
 def _session_user(request: Request) -> dict:

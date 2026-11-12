@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     # The login cookie is sent over HTTPS only. Turn off only to try the
     # dashboard on http://localhost — never on the public address.
     DASHBOARD_COOKIE_SECURE: bool = True
+    # Documents uploaded on the dashboard (documents.py). The files live on the
+    # api's `dashboard_docs` volume; per-file and total caps, and the free disk
+    # below which uploads stop (the database and logs share the disk).
+    DASHBOARD_DOCS_DIR: str = "/app/data/documents"
+    DASHBOARD_DOC_MAX_MB: int = 25
+    DASHBOARD_DOCS_TOTAL_MB: int = 5000
+    DASHBOARD_DOCS_MIN_FREE_MB: int = 2048
 
     @property
     def tunnel_group_ids(self) -> set[str]:
