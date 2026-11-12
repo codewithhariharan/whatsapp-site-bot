@@ -871,7 +871,10 @@ function showDocuments() {
           <input type="file" id="upFile" accept=".pdf,.xlsx,.xlsm,.xls" required>
           <input type="text" id="upNote" maxlength="300" placeholder="Note (optional), e.g. Rev B drawings for U3">
           <button class="btn primary" id="upBtn">Upload</button></form>
-        <div class="formerr" id="upErr"></div>`
+        <div class="formerr" id="upErr"></div>
+        <div id="wog" hidden style="margin-top:10px;font-size:13px;color:var(--muted)">On a WOG laptop, where this upload is blocked?
+          <a class="btn" id="wogLink" target="_blank" rel="noopener" style="margin-left:6px">Upload through FormSG ↗</a>
+          <span style="display:block;margin-top:4px">Files sent there appear here within a minute.</span></div>`
       : `<div style="margin-top:10px;font-size:13px;color:var(--muted)">To upload a file, <a href="#" id="upLogin">log in</a>.</div>`}
     </div>
     <div class="toolbar" style="margin-top:16px">
@@ -887,6 +890,7 @@ function showDocuments() {
       const r = await api(`/api/documents?${new URLSearchParams(docsState.q ? {q: docsState.q} : {})}`);
       if (current !== "documents") return;
       maxMb = r.max_mb;
+      if (r.form_url && $("#wog")) { $("#wogLink").href = r.form_url; $("#wog").hidden = false; }
       $("#docRows").innerHTML = r.documents.length ? r.documents.map(d => {
         const href = `/api/documents/${d.id}`;
         return `<tr><td><a href="${href}" target="_blank" rel="noopener">${esc(d.filename)}</a></td>

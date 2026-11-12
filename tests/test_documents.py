@@ -158,3 +158,11 @@ def test_only_uploader_or_admin_removes(table):
 ])
 def test_clean_filename(raw, clean):
     assert documents.clean_filename(raw) == clean
+
+
+def test_formsg_link_only_for_people_who_may_upload(table, monkeypatch):
+    monkeypatch.setattr(settings, "FORMSG_FORM_ID", "64abc")
+    assert _client().get("/api/documents").json()["form_url"] is None
+    assert _client(USER).get("/api/documents").json()["form_url"] == "https://form.gov.sg/64abc"
+    monkeypatch.setattr(settings, "FORMSG_FORM_ID", "")
+    assert _client(USER).get("/api/documents").json()["form_url"] is None

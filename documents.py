@@ -175,8 +175,12 @@ def list_documents(q: str = "", user: dict | None = Depends(optional_user)):
         "SELECT id, filename, kind, size_bytes, note, uploaded_by_id, uploaded_by, "
         f"uploaded_at FROM dashboard_documents {where} ORDER BY uploaded_at DESC, id DESC",
         params)
+    # The FormSG form is the way in from WOG laptops (formsg.py). Its link is
+    # offered only to people who may upload, as the page's own form is.
+    form_id = settings.FORMSG_FORM_ID.strip()
+    form_url = f"https://form.gov.sg/{form_id}" if form_id and user else None
     return {"documents": [_row(r, user) for r in rows],
-            "max_mb": settings.DASHBOARD_DOC_MAX_MB}
+            "max_mb": settings.DASHBOARD_DOC_MAX_MB, "form_url": form_url}
 
 
 @public.get("/api/documents/{doc_id}")
