@@ -10,6 +10,7 @@ from config import settings
 from dashboard import router as dashboard_router
 from dashboard_auth import router as auth_router
 from documents import router as documents_router
+from formsg import router as formsg_router
 from message_handler import handle_message
 from ingest_batch import scheduler
 from tunnel_handler import daily_email_scheduler
@@ -43,6 +44,7 @@ app = FastAPI(title="Site Bot", lifespan=lifespan,
 app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(documents_router)
+app.include_router(formsg_router)
 
 
 # ── Incoming messages ─────────────────────────────────────────────────────────

@@ -8,3 +8,4 @@ psycopg-pool==3.2.2
 google-genai==2.25.0
 openpyxl==3.1.4
 pillow==12.3.0
+pynacl==1.5.0

@@ -79,6 +79,16 @@ class Settings(BaseSettings):
     DASHBOARD_DOC_MAX_MB: int = 25
     DASHBOARD_DOCS_TOTAL_MB: int = 5000
     DASHBOARD_DOCS_MIN_FREE_MB: int = 2048
+    # A FormSG Storage-mode form whose attachments are filed under Documents
+    # (formsg.py) — how WOG laptops, which cannot upload to the dashboard,
+    # send files. The webhook stays off (404) until all three are set.
+    # FORMSG_SECRET_KEY is the form's secret key: .env only, never committed.
+    FORMSG_FORM_ID: str = ""
+    FORMSG_SECRET_KEY: str = ""
+    # Exactly the URL entered in the form's webhook setting; FormSG signs it.
+    FORMSG_WEBHOOK_URL: str = ""
+    # FormSG's production signing key (formsg-javascript-sdk signing-keys.ts).
+    FORMSG_SIGNING_PUBLIC_KEY: str = "3Tt8VduXsjjd4IrpdCd7BAkdZl/vUCstu9UvTX84FWw="
 
     @property
     def tunnel_group_ids(self) -> set[str]:

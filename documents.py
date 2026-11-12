@@ -112,6 +112,56 @@ def _row(r: dict, user: dict | None) -> dict:
                                   "uploaded_by", "uploaded_at")} | {"can_delete": mine}
 
 
+def store_bytes(filename: str, data: bytes, note: str, uploaded_by: str,
+                source: str) -> dict | None:
+    """File a document that arrived some other way than the page (formsg.py).
+
+    The same rules as an upload: allowed kind, contents match, size and disk
+    caps. `source` is unique, so a delivery FormSG repeats is filed once.
+    Returns the row, or None when the file is refused or already filed —
+    the reason is logged, since there is no one to show it to.
+    """
+    name = clean_filename(filename)
+    kind = kind_of(name)
+    if not name or not kind:
+        logger.warning("documents: refused %r from %s — not PDF or Excel", filename, source)
+        return None
+    if not data or len(data) > settings.DASHBOARD_DOC_MAX_MB * _MB:
+        logger.warning("documents: refused %r from %s — %d bytes", name, source, len(data))
+        return None
+    if db._fetch("SELECT 1 AS ok FROM dashboard_documents WHERE source = %s", (source,)):
+        return None
+    folder = _dir()
+    if (shutil.disk_usage(folder).free < settings.DASHBOARD_DOCS_MIN_FREE_MB * _MB
+            or _stored_total() >= settings.DASHBOARD_DOCS_TOTAL_MB * _MB):
+        logger.error("documents: no room for %r from %s", name, source)
+        return None
+
+    key = secrets.token_hex(16)
+    path = folder / key
+    try:
+        path.write_bytes(data)
+        if not content_matches(kind, path):
+            logger.warning("documents: refused %r from %s — contents are not .%s",
+                           name, source, kind)
+            path.unlink(missing_ok=True)
+            return None
+        rows = db._fetch(
+            "INSERT INTO dashboard_documents (filename, kind, size_bytes, sha256, storage_key, "
+            "note, uploaded_by, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (source) DO NOTHING RETURNING id, filename",
+            (name, kind, len(data), hashlib.sha256(data).hexdigest(), key,
+             note.strip()[:300] or None, uploaded_by[:120] or None, source))
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    if not rows:                     # filed meanwhile by a repeat delivery
+        path.unlink(missing_ok=True)
+        return None
+    logger.info("documents: filed %r from %s", name, source)
+    return rows[0]
+
+
 # ── Public ───────────────────────────────────────────────────────────────────
 
 @public.get("/api/documents")
