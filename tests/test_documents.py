@@ -111,7 +111,7 @@ def test_excel_is_always_a_download(table):
 
 @pytest.mark.parametrize("name,data", [
     ("setup.exe", b"MZ\x90\x00"),
-    ("notes.txt", b"hello"),
+    ("page.html", b"<script>alert(1)</script>"),
     ("fake.pdf", b"MZ\x90\x00 not a pdf"),
     ("fake.xlsx", b"PK\x03\x04 not really a zip"),
     ("other.xlsx", None),          # a real zip, but not a workbook
@@ -166,3 +166,34 @@ def test_formsg_link_only_for_people_who_may_upload(table, monkeypatch):
     assert _client(USER).get("/api/documents").json()["form_url"] == "https://form.gov.sg/64abc"
     monkeypatch.setattr(settings, "FORMSG_FORM_ID", "")
     assert _client(USER).get("/api/documents").json()["form_url"] is None
+
+
+def _docx() -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("word/document.xml", "<document/>")
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("name,data", [
+    ("minutes.docx", None),
+    ("old.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 100),
+    ("notes.txt", "Pour at U3 — 14:00\r\nRebar ✓\n".encode()),
+    ("bom.txt", b"\xef\xbb\xbfhello"),
+])
+def test_word_and_text_are_accepted(table, name, data):
+    r = _upload(_client(USER), name, _docx() if data is None else data)
+    assert r.status_code == 200, r.text
+    got = _client().get(f"/api/documents/{r.json()['document']['id']}")
+    assert got.headers["content-disposition"].startswith("attachment")
+
+
+@pytest.mark.parametrize("name,data", [
+    ("binary.txt", b"MZ\x90\x00\x03"),
+    ("latin1.txt", "caf\xe9".encode("latin-1")),
+    ("workbook.docx", None),       # an Excel zip renamed .docx
+])
+def test_fake_word_and_text_are_refused(table, name, data):
+    r = _upload(_client(USER), name, _xlsx() if data is None else data)
+    assert r.status_code == 400

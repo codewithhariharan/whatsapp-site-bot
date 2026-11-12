@@ -8,7 +8,7 @@
 CREATE TABLE IF NOT EXISTS dashboard_documents (
     id BIGSERIAL PRIMARY KEY,
     filename TEXT NOT NULL,              -- as uploaded, cleaned; shown and offered on download
-    kind TEXT NOT NULL,                  -- pdf | xlsx | xlsm | xls
+    kind TEXT NOT NULL,                  -- pdf | xlsx | xlsm | xls | docx | doc | txt (documents.KINDS)
     size_bytes BIGINT NOT NULL,
     sha256 TEXT NOT NULL,
     storage_key TEXT NOT NULL UNIQUE,    -- the file's name on the volume

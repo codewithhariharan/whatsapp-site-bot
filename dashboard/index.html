@@ -222,6 +222,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .kind { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px;
   background: var(--accent); color: var(--brand-2); text-transform: uppercase; }
 .kind.pdf { background: var(--bad-bg); color: var(--bad); }
+.kind.word { background: var(--accent); color: var(--brand); }
 
 @media (max-width: 640px) {
   header.top, main { padding-left: 16px; padding-right: 16px; }
@@ -866,9 +867,9 @@ const fmtSize = b => b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.m
 function showDocuments() {
   $("#view").innerHTML = `<div class="card">
       <b>Documents</b>
-      <div style="color:var(--muted);font-size:13px">PDFs and Excel files shared with the site record. Anyone with this page can open them.</div>
+      <div style="color:var(--muted);font-size:13px">PDF, Excel, Word and text files shared with the site record. Anyone with this page can open them.</div>
       ${ME ? `<form class="upload" id="upForm">
-          <input type="file" id="upFile" accept=".pdf,.xlsx,.xlsm,.xls" required>
+          <input type="file" id="upFile" accept=".pdf,.xlsx,.xlsm,.xls,.docx,.doc,.txt" required>
           <input type="text" id="upNote" maxlength="300" placeholder="Note (optional), e.g. Rev B drawings for U3">
           <button class="btn primary" id="upBtn">Upload</button></form>
         <div class="formerr" id="upErr"></div>
@@ -894,7 +895,7 @@ function showDocuments() {
       $("#docRows").innerHTML = r.documents.length ? r.documents.map(d => {
         const href = `/api/documents/${d.id}`;
         return `<tr><td><a href="${href}" target="_blank" rel="noopener">${esc(d.filename)}</a></td>
-          <td><span class="kind ${d.kind === "pdf" ? "pdf" : ""}">${esc(d.kind)}</span></td>
+          <td><span class="kind ${d.kind === "pdf" ? "pdf" : /^doc/.test(d.kind) ? "word" : ""}">${esc(d.kind)}</span></td>
           <td class="nowrap num">${fmtSize(d.size_bytes)}</td>
           <td>${esc(d.note || "")}</td><td>${esc(d.uploaded_by || "")}</td>
           <td class="nowrap">${fmtDateTime(d.uploaded_at)}</td>
@@ -913,7 +914,7 @@ function showDocuments() {
     const file = $("#upFile").files[0];
     $("#upErr").textContent = "";
     if (!file) return;
-    if (!/\.(pdf|xlsx|xlsm|xls)$/i.test(file.name)) { $("#upErr").textContent = "Only PDF and Excel files can be uploaded."; return; }
+    if (!/\.(pdf|xlsx|xlsm|xls|docx|doc|txt)$/i.test(file.name)) { $("#upErr").textContent = "Only PDF, Excel, Word and text files can be uploaded."; return; }
     if (file.size > maxMb * 1048576) { $("#upErr").textContent = `That file is over ${maxMb} MB.`; return; }
     const btn = $("#upBtn");
     btn.disabled = true; btn.innerHTML = `<span class="spinner"></span>Uploading…`;

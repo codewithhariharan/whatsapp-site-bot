@@ -1,4 +1,4 @@
-"""Documents on the web dashboard: PDFs and Excel workbooks people share.
+"""Documents on the web dashboard: PDF, Excel, Word and text files people share.
 
 Anyone can list and download them, like the rest of the record. Uploading
 and deleting need a login: a public page that accepts files from strangers
@@ -6,14 +6,15 @@ would soon be hosting someone else's. Deleting is the uploader's or an admin's.
 
 Narrow on purpose:
 
-  - Only .pdf, .xlsx, .xlsm and .xls, and the bytes must match the extension
-    (a PDF header, an Excel zip, an old-Excel OLE file). A renamed .exe is
-    refused, not stored.
+  - Only .pdf, .xlsx, .xlsm, .xls, .docx, .doc and .txt, and the bytes must
+    match the extension (a PDF header; an Excel or Word zip holding its
+    workbook or document part; an old-Office OLE file; UTF-8 text without
+    control bytes). A renamed .exe is refused, not stored.
   - The file is written under a random name in DASHBOARD_DOCS_DIR; the name
     the visitor gave is only ever data in the table.
   - A per-file size cap, a cap on all documents together, and a floor of free
     disk below which uploads stop — the bot's database and logs share the disk.
-  - Excel is always a download. A PDF opens in the browser's viewer.
+  - Only a PDF opens in the browser's viewer; everything else downloads.
 
 The body of an upload is the raw file (not a multipart form), with its name
 in the query string: no extra parsing dependency, and the size is enforced
@@ -45,6 +46,9 @@ KINDS = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
     "xls": "application/vnd.ms-excel",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "doc": "application/msword",
+    "txt": "text/plain; charset=utf-8",
 }
 _OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _MB = 1024 * 1024
@@ -81,20 +85,36 @@ def kind_of(name: str) -> str | None:
 
 def content_matches(kind: str, path: Path) -> bool:
     """Whether the file's bytes are what its extension says."""
+    if kind == "txt":
+        return is_text(path)
     with open(path, "rb") as f:
         head = f.read(8)
     if kind == "pdf":
         return head.startswith(b"%PDF-")
-    if kind == "xls":
+    if kind in ("xls", "doc"):
         return head == _OLE
-    # xlsx / xlsm: a zip holding a workbook part.
+    # xlsx / xlsm / docx: a zip holding the workbook or document part.
+    part = "word/document.xml" if kind == "docx" else "xl/workbook.xml"
     if not head.startswith(b"PK\x03\x04"):
         return False
     try:
         with zipfile.ZipFile(path) as z:
-            return "xl/workbook.xml" in z.namelist()
+            return part in z.namelist()
     except zipfile.BadZipFile:
         return False
+
+
+def is_text(path: Path) -> bool:
+    """UTF-8 (or plain ASCII) text with no control bytes beyond tab, newlines
+    and form feed, so a binary renamed .txt is refused."""
+    data = path.read_bytes()
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return not any(ord(c) < 32 and c not in "\t\n\r\f" for c in text)
 
 
 def _stored_total() -> int:
@@ -124,7 +144,7 @@ def store_bytes(filename: str, data: bytes, note: str, uploaded_by: str,
     name = clean_filename(filename)
     kind = kind_of(name)
     if not name or not kind:
-        logger.warning("documents: refused %r from %s — not PDF or Excel", filename, source)
+        logger.warning("documents: refused %r from %s — not an allowed type", filename, source)
         return None
     if not data or len(data) > settings.DASHBOARD_DOC_MAX_MB * _MB:
         logger.warning("documents: refused %r from %s — %d bytes", name, source, len(data))
@@ -213,8 +233,9 @@ async def upload(request: Request, filename: str = Query(..., min_length=1, max_
     name = clean_filename(filename)
     kind = kind_of(name)
     if not name or not kind:
-        raise HTTPException(status_code=400, detail="Only PDF and Excel files (.pdf, .xlsx, "
-                                                    ".xlsm, .xls) can be uploaded.")
+        raise HTTPException(status_code=400, detail="Only PDF, Excel, Word and text files "
+                                                    "(.pdf, .xlsx, .xlsm, .xls, .docx, .doc, "
+                                                    ".txt) can be uploaded.")
 
     limit = settings.DASHBOARD_DOC_MAX_MB * _MB
     declared = request.headers.get("content-length")
