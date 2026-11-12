@@ -215,6 +215,17 @@ details.sql pre { white-space: pre-wrap; word-break: break-word; background: var
 a.btn { text-decoration: none; display: inline-block; }
 .gate { max-width: 520px; margin: 40px auto; text-align: center; padding: 28px; }
 .gate p { color: var(--muted); margin: 6px 0 18px; }
+.paths { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px; }
+@media (max-width: 820px) { .paths { grid-template-columns: 1fr; } }
+.path { border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; background: var(--surface-2); }
+.path.wog { border-color: var(--brand-2); background: var(--accent); }
+.path .tag { display: inline-block; font-size: 11.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
+.path.wog .tag { background: var(--brand-2); border-color: var(--brand-2); color: #fff; }
+.path h3 { margin: 10px 0 4px; font-size: 15px; }
+.path p { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+.path p.off { margin: 0; font-style: italic; }
+.path .upload { margin-top: 0; }
 .upload { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
 .upload input[type=text] { flex: 1 1 220px; }
 .upload input[type=file] { flex: 1 1 240px; max-width: 100%; }
@@ -868,15 +879,26 @@ function showDocuments() {
   $("#view").innerHTML = `<div class="card">
       <b>Documents</b>
       <div style="color:var(--muted);font-size:13px">PDF, Excel, Word and text files shared with the site record. Anyone with this page can open them.</div>
-      ${ME ? `<form class="upload" id="upForm">
-          <input type="file" id="upFile" accept=".pdf,.xlsx,.xlsm,.xls,.docx,.doc,.txt" required>
-          <input type="text" id="upNote" maxlength="300" placeholder="Note (optional), e.g. Rev B drawings for U3">
-          <button class="btn primary" id="upBtn">Upload</button></form>
-        <div class="formerr" id="upErr"></div>
-        <div id="wog" hidden style="margin-top:10px;font-size:13px;color:var(--muted)">On a WOG laptop, where this upload is blocked?
-          <a class="btn" id="wogLink" target="_blank" rel="noopener" style="margin-left:6px">Upload through FormSG ↗</a>
-          <span style="display:block;margin-top:4px">Files sent there appear here within a minute.</span></div>`
-      : `<div style="margin-top:10px;font-size:13px;color:var(--muted)">To upload a file, <a href="#" id="upLogin">log in</a>.</div>`}
+      ${ME ? `<div class="paths">
+        <section class="path wog">
+          <span class="tag">WOG users</span>
+          <h3>On a WOG (government) laptop</h3>
+          <p>Uploading straight to this site is blocked on WOG laptops. Upload through the FormSG form instead; the file appears below within a minute.</p>
+          <a class="btn primary" id="wogLink" target="_blank" rel="noopener" hidden>Upload through FormSG ↗</a>
+          <p class="off" id="wogOff" hidden>The FormSG form isn't connected yet.</p>
+        </section>
+        <section class="path">
+          <span class="tag">Non-WOG users</span>
+          <h3>On any other computer or phone</h3>
+          <p>Upload here directly.</p>
+          <form class="upload" id="upForm">
+            <input type="file" id="upFile" accept=".pdf,.xlsx,.xlsm,.xls,.docx,.doc,.txt" required>
+            <input type="text" id="upNote" maxlength="300" placeholder="Note (optional), e.g. Rev B drawings for U3">
+            <button class="btn primary" id="upBtn">Upload</button></form>
+          <div class="formerr" id="upErr"></div>
+        </section>
+        </div>`
+      : `<div style="margin-top:10px;font-size:13px;color:var(--muted)">To upload a file, from a WOG laptop or any other device, <a href="#" id="upLogin">log in</a>.</div>`}
     </div>
     <div class="toolbar" style="margin-top:16px">
       <input type="search" id="q" placeholder="Search by name, note or uploader…" value="${esc(docsState.q)}"></div>
@@ -891,7 +913,11 @@ function showDocuments() {
       const r = await api(`/api/documents?${new URLSearchParams(docsState.q ? {q: docsState.q} : {})}`);
       if (current !== "documents") return;
       maxMb = r.max_mb;
-      if (r.form_url && $("#wog")) { $("#wogLink").href = r.form_url; $("#wog").hidden = false; }
+      if ($("#wogLink")) {
+        if (r.form_url) $("#wogLink").href = r.form_url;
+        $("#wogLink").hidden = !r.form_url;
+        $("#wogOff").hidden = !!r.form_url;
+      }
       $("#docRows").innerHTML = r.documents.length ? r.documents.map(d => {
         const href = `/api/documents/${d.id}`;
         return `<tr><td><a href="${href}" target="_blank" rel="noopener">${esc(d.filename)}</a></td>
